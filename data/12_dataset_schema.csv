@@ -1,0 +1,20 @@
+﻿column_name,dataset,description
+source_message_id,production/model,Original unique broadcast ID; used for idempotency.
+processing_order,production,Chronological order restored from the original CSV.
+raw_text,all,Original message text.
+normalized_text,all,Whitespace and punctuation-normalized text for modelling.
+record_type,production/model,"TRADE_ACTION, TRADE_UPDATE, TRADE_CONTROL or NON_TRADE."
+action_label,production/model,Primary intent/action class.
+symbol,production/model,Canonical instrument identifier.
+contract_month,production/model,Normalized futures contract month such as JUN or AUG.
+direction,production/model,LONG or SHORT for opening/adding actions.
+quantity_percent,production/model,Explicit or rule-derived percentage.
+quantity_basis,production/model,CURRENT_HOLDING for reductions; MODEL_ALLOCATION for entries.
+remaining_holding_multiplier,production/model,Multiplier applied to current holding after reduction/close.
+execution_prices_json,production/model,One or more parsed execution prices.
+stop_loss,production/model,Parsed stop-loss value.
+targets_json,production/model,Parsed target values.
+requires_context,production/model,"True for corrections, references, group or conditional instructions."
+auto_apply_eligible,production,Whether the event can safely update holdings automatically.
+needs_review,all labelled,Label or structure needs review.
+normalized_text_hash,all,Duplicate grouping key to prevent train/test leakage.

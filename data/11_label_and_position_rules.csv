@@ -1,0 +1,14 @@
+﻿rule_id,phrase_pattern,action_label,quantity_percent,quantity_basis,holding_formula,auto_apply_policy,example
+R01,X% PROFIT BOOK / BOOK X% PROFIT / SELL X% without SL-target,REDUCE_POSITION,X,CURRENT_HOLDING,new = current * (1 - X/100),Eligible when one symbol is clear.,Sell 50% Nifty: 100 -> 50; sell 50% again: 50 -> 25.
+R02,PART PROFIT / PARTIAL PROFIT,REDUCE_POSITION,25,CURRENT_HOLDING,new = current * 0.75,Eligible when one symbol is clear.,Part profit in NVDA reduces the current NVDA holding by 25%.
+R03,FULL PROFIT / BOOK PROFIT / EXIT / SL TOUCH,CLOSE_POSITION,100,CURRENT_HOLDING,new = 0,Eligible when one symbol is clear.,Book profit in AMD closes the remaining AMD holding.
+R04,BUY X%,OPEN_LONG,X,MODEL_ALLOCATION,open/add X% of configured model allocation,Eligible with symbol and entry price.,Buy 50% NVDA opens a half-sized long allocation.
+R05,BUY without percentage,OPEN_LONG,100 default,MODEL_ALLOCATION,open full configured model allocation,Eligible with symbol and entry price.,Buy INFY opens the configured full position.
+R06,SELL or X% SELL with SL/target,OPEN_SHORT,X or 100 default,MODEL_ALLOCATION,open short allocation,"Eligible with symbol, stop and/or target context.",50% SELL NIFTY with SL and target is a 50% short entry.
+R07,HOLD,HOLD_POSITION,,NONE,no quantity change,Safe status update.,Hold Reliance keeps the current position unchanged.
+R08,HOLD WITH SL / POSITIONAL SL,UPDATE_STOP_LOSS,,NONE,no quantity change; update stop_loss,Eligible with one symbol and numeric stop.,Hold Nifty with SL 23900 updates only the stop loss.
+R09,TARGET TOUCH,TARGET_HIT,,NONE,no automatic quantity change,Status-only until a separate exit instruction arrives.,2nd target touch in SNDK does not itself change holdings.
+R10,IGNORE message,CANCEL_PREVIOUS,,NONE,cancel/link to prior event,Requires prior-message context.,Ignore NG message must reference the preceding NG instruction.
+R11,CORRECTION,Embedded corrected action,As stated,Depends on embedded action,supersede prior related event,Manual/context review until prior-event linking is implemented.,Correction: Buy Gold ... replaces the preceding Gold instruction.
+R12,Multiple instruments in one message,SPLIT_REQUIRED,Per instrument,Depends on each action,create one event per instrument,Never auto-apply as one event.,SL touched in Gold & Silver must become two close events.
+R13,IF / WHEN TRIGGERED,CONDITIONAL_INSTRUCTION,As stated,Depends on embedded action,no immediate update,Apply only when the external condition is confirmed.,Buy Dow when triggered is not an immediate trade event.
