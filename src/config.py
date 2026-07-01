@@ -6,6 +6,7 @@ Single source of truth for all configurable thresholds, paths, and constants.
 Do not scatter these values throughout the project.
 Changing a threshold or path here affects the entire system.
 """
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 # ---------------------------------------------------------------------------
 # Database and model file paths
 # ---------------------------------------------------------------------------
-DATABASE_PATH = STORAGE_DIR / "trade_holdings.db"
+DATABASE_PATH = Path(os.environ.get("TRADE_DB_PATH", STORAGE_DIR / "trade_holdings.db"))
 MODEL_PATH = MODELS_DIR / "action_classifier.joblib"
 MODEL_METADATA_PATH = MODELS_DIR / "model_metadata.json"
 

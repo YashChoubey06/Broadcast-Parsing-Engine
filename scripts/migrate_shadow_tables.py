@@ -8,8 +8,10 @@ from src.database import get_connection
 
 from contextlib import closing
 
-def apply_migration():
-    with closing(get_connection(DATABASE_PATH)) as conn:
+def apply_migration(db_path: Path | None = None):
+    if db_path is None:
+        db_path = DATABASE_PATH
+    with closing(get_connection(db_path)) as conn:
         cursor = conn.cursor()
         
         # 1. Create schema_migrations table
@@ -140,4 +142,9 @@ def apply_migration():
         print("Migration complete.")
 
 if __name__ == "__main__":
-    apply_migration()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Apply shadow-review database migration.")
+    parser.add_argument("--db", default=str(DATABASE_PATH), help="SQLite database path")
+    args = parser.parse_args()
+    apply_migration(Path(args.db))

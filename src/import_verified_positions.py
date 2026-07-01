@@ -10,6 +10,7 @@ import sys
 import json
 from pathlib import Path
 from datetime import datetime, timezone
+from contextlib import closing
 
 from src.database import get_connection, transaction
 from src.config import DATABASE_PATH
@@ -33,58 +34,48 @@ def _parse_row(row: dict) -> PositionState:
         updated_at=row.get("as_of_timestamp", datetime.now(timezone.utc).isoformat())
     )
 
-def main():
-    parser = argparse.ArgumentParser(description="Import verified positions safely.")
-    parser.add_argument("--input", required=True, help="Path to initial positions CSV")
-    parser.add_argument("--dry-run", action="store_true", help="Show proposed changes without writing")
-    parser.add_argument("--apply", action="store_true", help="Actually apply the changes")
-    parser.add_argument("--confirm", action="store_true", help="Confirmation flag required for --apply")
-    args = parser.parse_args()
-
-    if args.apply and not args.confirm:
+def import_positions(input_path: Path, db_path: Path = DATABASE_PATH, dry_run: bool = False, apply: bool = False, confirm: bool = False) -> int:
+    if apply and not confirm:
         print("Error: --apply requires --confirm to be explicitly set.")
-        sys.exit(1)
-        
-    if not args.dry_run and not args.apply:
-        print("Error: Must specify either --dry-run or --apply --confirm")
-        sys.exit(1)
+        return 1
 
-    input_path = Path(args.input)
+    if not dry_run and not apply:
+        print("Error: Must specify either --dry-run or --apply --confirm")
+        return 1
+
     if not input_path.is_file():
         print(f"Error: File not found -> {input_path}")
-        sys.exit(1)
+        return 1
 
-    with get_connection(DATABASE_PATH) as conn:
+    with closing(get_connection(db_path)) as conn:
         positions_to_insert = []
         with open(input_path, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for i, row in enumerate(reader):
                 pos = _parse_row(row)
-                
-                # Check for existing
+
                 cur = conn.execute("""
-                    SELECT id FROM positions 
+                    SELECT id FROM positions
                     WHERE portfolio_id = 'verified' AND symbol = ? AND direction = ? AND status = 'OPEN'
                 """, (pos.symbol, pos.direction))
-                
+
                 if cur.fetchone():
                     print(f"Row {i+1}: OVERWRITE PREVENTED. Existing open {pos.direction} position found for {pos.symbol}.")
                     continue
-                
+
                 positions_to_insert.append(pos)
-                
-        if args.dry_run:
+
+        if dry_run:
             print("--- DRY RUN ---")
             print(f"Would import {len(positions_to_insert)} new verified positions:")
             for p in positions_to_insert:
                 print(f"  + {p.direction} {p.symbol} @ {p.current_allocation_pct}%")
             print("No database changes made.")
-            return
+            return 0
 
-        if args.apply and args.confirm:
+        if apply and confirm:
             now = datetime.now(timezone.utc).isoformat()
-            # We must create immutable initial-position events too.
-            with transaction(DATABASE_PATH) as tx_conn:
+            with transaction(db_path) as tx_conn:
                 for p in positions_to_insert:
                     cur = tx_conn.execute("""
                         INSERT INTO positions (
@@ -97,13 +88,18 @@ def main():
                         p.direction, p.current_allocation_pct, p.average_entry_price, p.stop_loss, json.dumps(p.targets),
                         p.status, p.opened_at, p.updated_at
                     ))
-                    
-                    pos_after = p
-                    pos_after.id = cur.lastrowid
-                    
-                    # Also insert into verified_events as an INITIAL_SETUP record
+
+                    p.position_id = cur.lastrowid
                     event_id = f"import_{int(datetime.now().timestamp())}_{p.symbol}_{p.direction}"
-                    
+                    tx_conn.execute("""
+                        INSERT INTO incoming_messages (
+                            source_message_id, raw_text, normalized_text, segment_name,
+                            created_at, received_at, processing_status, text_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        event_id, "CSV Import", "CSV Import", p.market_group,
+                        now, now, "INITIAL_SETUP", None,
+                    ))
                     fake_event_json = json.dumps({
                         "source_message_id": event_id,
                         "raw_text": "CSV Import",
@@ -111,18 +107,17 @@ def main():
                         "final_action": "INITIAL_SETUP",
                         "symbol": p.symbol,
                         "direction": p.direction,
-                        "quantity_percent": p.current_allocation_pct
+                        "quantity_percent": str(p.current_allocation_pct)
                     })
-                    
                     pos_json = json.dumps({
-                        "id": p.id,
+                        "id": p.position_id,
                         "portfolio_id": p.portfolio_id,
                         "symbol": p.symbol,
                         "direction": p.direction,
-                        "current_allocation_pct": p.current_allocation_pct,
+                        "current_allocation_pct": str(p.current_allocation_pct),
                         "status": p.status
                     })
-                    
+
                     tx_conn.execute("""
                         INSERT INTO verified_events (
                             source_message_id, approved_event_json, position_after_json, applied_at
@@ -130,6 +125,20 @@ def main():
                     """, (event_id, fake_event_json, pos_json, now))
 
             print(f"Successfully applied {len(positions_to_insert)} verified positions.")
+            return 0
+
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Import verified positions safely.")
+    parser.add_argument("--input", required=True, help="Path to initial positions CSV")
+    parser.add_argument("--dry-run", action="store_true", help="Show proposed changes without writing")
+    parser.add_argument("--apply", action="store_true", help="Actually apply the changes")
+    parser.add_argument("--confirm", action="store_true", help="Confirmation flag required for --apply")
+    parser.add_argument("--db", default=str(DATABASE_PATH), help="SQLite database path")
+    args = parser.parse_args()
+    sys.exit(import_positions(Path(args.input), Path(args.db), args.dry_run, args.apply, args.confirm))
 
 if __name__ == "__main__":
     main()

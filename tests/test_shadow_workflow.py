@@ -1,6 +1,7 @@
 import pytest
 import sqlite3
 import json
+import csv
 from pathlib import Path
 from decimal import Decimal
 
@@ -11,8 +12,11 @@ from src.shadow_service import (
     edit_and_approve,
     reject,
     mark_non_trade,
+    mark_needs_context,
     get_pending_reviews
 )
+from src.export_verified_training_data import export_labels
+from src.import_verified_positions import import_positions
 from scripts.migrate_shadow_tables import apply_migration
 
 TEST_DB_PATH = Path("storage/test_shadow_workflow.db")
@@ -178,3 +182,38 @@ def test_foreign_keys_active():
     with closing(get_connection(TEST_DB_PATH)) as conn:
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO parser_predictions (source_message_id, parser_version, model_version, prediction_json, created_at) VALUES ('invalid', 'v', 'v', '{}', '2020')")
+
+def test_shadow_reduction_uses_verified_baseline_when_shadow_empty(tmp_path):
+    csv_path = tmp_path / "initial_positions.csv"
+    csv_path.write_text(
+        "symbol,direction,current_allocation_pct,market_group\nNIFTY,LONG,100,Indices\n",
+        encoding="utf-8",
+    )
+    assert import_positions(csv_path, TEST_DB_PATH, dry_run=False, apply=True, confirm=True) == 0
+
+    assert get_pos(TEST_DB_PATH, "shadow", "NIFTY") is None
+    res = ingest_message("baseline-reduce", "SELL 50% NIFTY", "Indices", TEST_DB_PATH)
+    assert res["status"] == "PENDING_REVIEW"
+
+    verified = get_pos(TEST_DB_PATH, "verified", "NIFTY")
+    shadow = get_pos(TEST_DB_PATH, "shadow", "NIFTY")
+    assert verified["current_allocation_pct"] == "100"
+    assert shadow["current_allocation_pct"] == "50.0000000000"
+
+def test_rejected_and_needs_context_reviews_export_as_training_candidates(tmp_path):
+    ingest_message("reject-export", "BUY 50% AMD @160", "Equity", TEST_DB_PATH)
+    reject("reject-export", "ReviewerA", "bad idea", TEST_DB_PATH)
+    ingest_message("context-export", "IF NIFTY BREAKS 26000 BUY", "Indices", TEST_DB_PATH)
+    mark_needs_context("context-export", "ReviewerA", "conditional", TEST_DB_PATH)
+
+    output = tmp_path / "verified_shadow_labels.csv"
+    export_labels(output, TEST_DB_PATH)
+    rows = list(csv.DictReader(output.open(newline="", encoding="utf-8")))
+
+    decisions = {row["source_message_id"]: row["human decision"] for row in rows}
+    classifications = {row["source_message_id"]: row["label classification"] for row in rows}
+    assert decisions["reject-export"] == "REJECTED"
+    assert decisions["context-export"] == "NEEDS_CONTEXT"
+    assert classifications["reject-export"] == "human-reviewed training candidate"
+    assert classifications["context-export"] == "human-reviewed training candidate"
+    assert rows[0]["reviewer"] == "ReviewerA"

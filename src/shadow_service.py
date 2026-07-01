@@ -76,6 +76,45 @@ def _get_engine(conn: sqlite3.Connection, portfolio_id: str, event_json: str, re
         portfolio_id=portfolio_id
     )
 
+def _copy_verified_baseline_to_shadow(conn: sqlite3.Connection, event: ParsedTradeEvent) -> None:
+    if event.final_action != "REDUCE_POSITION" or not event.symbol:
+        return
+
+    shadow = conn.execute(
+        "SELECT 1 FROM positions WHERE portfolio_id='shadow' AND symbol=? AND status='OPEN' LIMIT 1",
+        (event.symbol,)
+    ).fetchone()
+    if shadow:
+        return
+
+    verified = conn.execute(
+        """
+        SELECT * FROM positions
+        WHERE portfolio_id='verified' AND symbol=? AND status='OPEN'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (event.symbol,)
+    ).fetchone()
+    if not verified:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO positions (
+            portfolio_id, market_group, symbol, contract_month, option_type, strike_price,
+            direction, current_allocation_pct, average_entry_price, stop_loss, targets_json,
+            status, opened_at, updated_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "shadow", verified["market_group"], verified["symbol"], verified["contract_month"],
+            verified["option_type"], verified["strike_price"], verified["direction"],
+            verified["current_allocation_pct"], verified["average_entry_price"],
+            verified["stop_loss"], verified["targets_json"], "OPEN", now, now, verified["version"],
+        )
+    )
+
 def ingest_message(source_message_id: str, raw_text: str, segment_name: str, db_path: Path = DATABASE_PATH) -> dict:
     with transaction(db_path) as conn:
         cur = conn.execute("SELECT 1 FROM incoming_messages WHERE source_message_id = ?", (source_message_id,))
@@ -124,6 +163,7 @@ def ingest_message(source_message_id: str, raw_text: str, segment_name: str, db_
         )
         
         if safe_for_shadow:
+            _copy_verified_baseline_to_shadow(conn, event)
             engine = _get_engine(conn, "shadow", event.to_json())
             res = engine.apply_event(event)
             if res.status == "ERROR":
@@ -231,6 +271,10 @@ def reject(source_message_id: str, reviewer: str, notes: str = "", db_path: Path
         
         _record_review(conn, source_message_id, "REJECTED", reviewer, notes, orig_event)
         conn.execute("UPDATE incoming_messages SET processing_status = 'REJECTED' WHERE source_message_id = ?", (source_message_id,))
+        label_event = ParsedTradeEvent.from_json(orig_event.to_json())
+        label_event.final_action = "REJECTED"
+        label_event.record_type = "HUMAN_REVIEW_DECISION"
+        _record_label(conn, source_message_id, label_event, was_corrected=True)
         return {"status": "REJECTED"}
 
 def mark_non_trade(source_message_id: str, reviewer: str, notes: str = "", db_path: Path = DATABASE_PATH) -> dict:
@@ -260,6 +304,10 @@ def mark_needs_context(source_message_id: str, reviewer: str, notes: str = "", d
         
         _record_review(conn, source_message_id, "NEEDS_CONTEXT", reviewer, notes, orig_event)
         conn.execute("UPDATE incoming_messages SET processing_status = 'NEEDS_CONTEXT' WHERE source_message_id = ?", (source_message_id,))
+        label_event = ParsedTradeEvent.from_json(orig_event.to_json())
+        label_event.final_action = "NEEDS_CONTEXT"
+        label_event.record_type = "HUMAN_REVIEW_DECISION"
+        _record_label(conn, source_message_id, label_event, was_corrected=True)
         return {"status": "NEEDS_CONTEXT"}
 
 def mark_duplicate(source_message_id: str, reviewer: str, notes: str = "", db_path: Path = DATABASE_PATH) -> dict:
