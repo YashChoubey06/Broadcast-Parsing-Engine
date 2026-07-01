@@ -246,12 +246,38 @@ python -m src.show_review_queue
 python -m src.show_review_queue --all
 ```
 
+## Shadow review workflow
+
+Shadow testing uses separate portfolios in the shared `positions` table:
+
+| Portfolio | Purpose |
+|-----------|---------|
+| `default` / historical | Historical replay and standard local application |
+| `shadow` | Parser predictions applied for comparison only |
+| `verified` | Human-approved holdings state |
+
+Ingested shadow messages are stored as immutable parser predictions first.
+Safe parser predictions may update only the `shadow` portfolio. The `verified`
+portfolio changes only after a human reviewer approves or edits the prediction.
+
+Start the local review app:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/shadow_review_app.py
+```
+
+Export human-reviewed labels for future training:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.export_verified_training_data --output data/verified_shadow_labels.csv
+```
+
 ---
 
 ## Run tests
 
 ```powershell
-pytest tests/ -v
+.\.venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
 Run a specific test file:
@@ -302,8 +328,19 @@ Tables:
 | `processed_messages` | Idempotency log |
 | `manual_review_queue` | Pending review items |
 | `position_snapshots` | Holdings snapshot after each event |
+| `schema_migrations` | Applied migration log |
+| `incoming_messages` | Shadow-review input messages |
+| `parser_predictions` | Immutable parser predictions for review |
+| `human_reviews` | Human decisions and correction metadata |
+| `shadow_events` | Events applied to the shadow portfolio |
+| `verified_events` | Events approved into the verified portfolio |
+| `verified_labels` | Human-reviewed labels for training export |
 
 All Decimal values (allocations, prices, stop losses) are stored as `TEXT` for exact precision.
+
+SQLite is intended here for local, limited single-writer operation. Do not treat
+the Streamlit review app plus batch tools as a high-concurrency production
+database deployment.
 
 ---
 
@@ -348,6 +385,7 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 4. **Missing portfolio start**: The production dataset may not start from an empty portfolio. Reduction/close messages without a known open position go to manual review.
 5. **Group actions**: `CLOSE_GROUP` is classified and reviewed but not automatically applied.
 6. **Option contracts**: Strike/option type are extracted but position keying is simplified in this version.
+7. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
 
 ---
 

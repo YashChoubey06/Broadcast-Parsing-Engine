@@ -53,6 +53,10 @@ _BOOK_PCT_PROFIT_RE = re.compile(
     r"(?:BOOK)\s+(\d+(?:\.\d+)?)\s*%\s*PROFIT",
     re.IGNORECASE,
 )
+_REDUCE_PCT_RE = re.compile(
+    r"\bREDUCE\s+(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
 _PLAIN_BUY_RE = re.compile(r"\bBUY\b", re.IGNORECASE)
 _AGAIN_ADD_RE = re.compile(
     r"\b(AGAIN\s+BUY|RE-?BUY|ADD\s+LONG|AGAIN\s+ADD)\b",
@@ -264,7 +268,23 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 9: TARGET TOUCH  → TARGET_HIT (status only)
+    # Priority 9: Explicit REDUCE X% → REDUCE_POSITION X%
+    # ------------------------------------------------------------------
+    reduce_pct_match = _REDUCE_PCT_RE.search(text)
+    if reduce_pct_match:
+        pct = extraction.quantity_percent
+        if pct is None:
+            pct = Decimal(reduce_pct_match.group(1))
+        r.rule_action = "REDUCE_POSITION"
+        r.quantity_percent = pct
+        r.quantity_basis = "CURRENT_HOLDING"
+        r.remaining_holding_multiplier = Decimal("1") - pct / Decimal("100")
+        r.rule_confidence = 1.0
+        r.rule_notes = f"Explicit reduce {pct}%: reduce current holding."
+        return r
+
+    # ------------------------------------------------------------------
+    # Priority 10: TARGET TOUCH  → TARGET_HIT (status only)
     # ------------------------------------------------------------------
     if extraction.has_target_touch:
         r.rule_action = "TARGET_HIT"
@@ -274,7 +294,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 10: HOLD WITH SL / POSITIONAL SL  → UPDATE_STOP_LOSS
+    # Priority 11: HOLD WITH SL / POSITIONAL SL  → UPDATE_STOP_LOSS
     # ------------------------------------------------------------------
     if extraction.has_hold and extraction.stop_loss is not None:
         r.rule_action = "UPDATE_STOP_LOSS"
@@ -291,7 +311,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 11: HOLD ALONE  → HOLD_POSITION
+    # Priority 12: HOLD ALONE  → HOLD_POSITION
     # ------------------------------------------------------------------
     if extraction.has_hold:
         r.rule_action = "HOLD_POSITION"
@@ -301,7 +321,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 12: AGAIN BUY / ADD LONG  → ADD_LONG
+    # Priority 13: AGAIN BUY / ADD LONG  → ADD_LONG
     # ------------------------------------------------------------------
     if _AGAIN_ADD_RE.search(text):
         r.rule_action = "ADD_LONG"
@@ -314,7 +334,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 13: AGAIN SELL / ADD SHORT  → ADD_SHORT
+    # Priority 14: AGAIN SELL / ADD SHORT  → ADD_SHORT
     # ------------------------------------------------------------------
     if _AGAIN_SHORT_RE.search(text):
         r.rule_action = "ADD_SHORT"
@@ -327,7 +347,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 14: PLAIN BUY  → OPEN_LONG (or review if duplicate)
+    # Priority 15: PLAIN BUY  → OPEN_LONG (or review if duplicate)
     # ------------------------------------------------------------------
     if _PLAIN_BUY_RE.search(text) and not _PLAIN_SELL_RE.search(text):
         r.rule_action = "OPEN_LONG"
@@ -340,7 +360,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 15: SELL ambiguity resolution (Rules A/B/C/D)
+    # Priority 16: SELL ambiguity resolution (Rules A/B/C/D)
     # ------------------------------------------------------------------
     if _PLAIN_SELL_RE.search(text) or _SHORT_EXPLICIT_RE.search(text):
         return _resolve_sell(text, extraction, existing_long, existing_short, has_holdings_context)

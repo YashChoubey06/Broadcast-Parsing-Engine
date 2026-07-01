@@ -33,6 +33,14 @@ class TestR01_ProfitBook:
         assert r.rule_action == "REDUCE_POSITION"
         assert r.quantity_percent == Decimal("25")
 
+    def test_literal_reduce_with_percentage(self):
+        text = "REDUCE 50% IN RELIANCE"
+        r = apply_rules(text, _extract(text), existing_long=True, has_holdings_context=True)
+        assert r.rule_action == "REDUCE_POSITION"
+        assert r.quantity_percent == Decimal("50")
+        assert r.quantity_basis == "CURRENT_HOLDING"
+        assert r.remaining_holding_multiplier == Decimal("0.5")
+
 
 class TestR02_PartProfit:
     def test_part_profit(self):

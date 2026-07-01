@@ -75,6 +75,18 @@ class TestParsedEventFields:
         assert event.quantity_basis == "CURRENT_HOLDING"
         assert event.remaining_holding_multiplier == Decimal("0.5")
 
+    def test_literal_reduce_wording(self):
+        parser = make_parser(mock_ml_action="UNKNOWN", mock_ml_confidence=0.0)
+        event = parser.parse(
+            "REDUCE 50% IN RELIANCE",
+            existing_long=True,
+            has_holdings_context=True,
+        )
+        assert event.final_action == "REDUCE_POSITION"
+        assert event.symbol == "RELIANCE"
+        assert event.quantity_percent == Decimal("50")
+        assert event.quantity_basis == "CURRENT_HOLDING"
+
     def test_part_profit_defaults_25_pct(self):
         parser = make_parser()
         event = parser.parse("Part profit in INFY")
