@@ -117,6 +117,22 @@ class ParsedTradeEvent:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
+    @classmethod
+    def from_json(cls, json_str: str) -> "ParsedTradeEvent":
+        d = json.loads(json_str)
+        if d.get("strike_price") is not None:
+            d["strike_price"] = Decimal(str(d["strike_price"]))
+        if d.get("quantity_percent") is not None:
+            d["quantity_percent"] = Decimal(str(d["quantity_percent"]))
+        if d.get("entry_prices") is not None:
+            d["entry_prices"] = [Decimal(str(x)) for x in d["entry_prices"]]
+        if d.get("stop_loss") is not None:
+            d["stop_loss"] = Decimal(str(d["stop_loss"]))
+        if d.get("targets") is not None:
+            d["targets"] = [Decimal(str(x)) for x in d["targets"]]
+            
+        return cls(**d)
+
 
 # ---------------------------------------------------------------------------
 # PositionState

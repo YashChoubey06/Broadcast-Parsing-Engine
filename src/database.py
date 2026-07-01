@@ -17,7 +17,7 @@ IMPORTANT: Decimal values are stored as TEXT (not REAL) to preserve
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from pathlib import Path
 from typing import Iterator
 
@@ -168,7 +168,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
     Safe to call on an already-initialised database (idempotent).
     """
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with get_connection(db_path) as conn:
+    with closing(get_connection(db_path)) as conn:
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
     print(f"Database initialised: {db_path}")
