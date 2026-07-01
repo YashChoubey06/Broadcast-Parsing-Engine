@@ -1,0 +1,3 @@
+symbol,direction,current_allocation_pct,market_group
+NIFTY,LONG,100,Indices
+NVDA,LONG,75,Equity

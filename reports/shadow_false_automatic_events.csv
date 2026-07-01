@@ -1,0 +1,3 @@
+source_message_id,predicted,actual
+acceptance-003,REDUCE_POSITION,REDUCE_POSITION
+acceptance-004,OPEN_LONG,REJECTED

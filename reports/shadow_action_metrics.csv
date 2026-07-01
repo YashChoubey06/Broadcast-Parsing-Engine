@@ -1,0 +1,6 @@
+verified_action,count,correct,accuracy
+NEEDS_CONTEXT,1,0,0.0
+NON_TRADE,1,0,0.0
+OPEN_LONG,1,1,1.0
+REDUCE_POSITION,5,4,0.8
+REJECTED,1,0,0.0

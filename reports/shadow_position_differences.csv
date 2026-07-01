@@ -1,0 +1,5 @@
+symbol,direction,verified_allocation_pct,shadow_allocation_pct,matches
+,LONG,10,,False
+AMD,LONG,,50,False
+NIFTY,LONG,10.0000000000,10.0000000000,True
+NVDA,LONG,37.5000000000,56.2500000000,False

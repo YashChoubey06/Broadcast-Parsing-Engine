@@ -1,0 +1,7 @@
+id,portfolio_id,market_group,symbol,contract_month,option_type,strike_price,direction,current_allocation_pct,average_entry_price,stop_loss,targets_json,status,opened_at,updated_at,version
+1,verified,Indices,NIFTY,,,,LONG,10.0000000000,,,[],OPEN,2026-07-01T04:53:08.175674+00:00,2026-07-01T04:53:08.333046+00:00,5
+2,verified,Equity,NVDA,,,,LONG,37.5000000000,,,[],OPEN,2026-07-01T04:53:08.175744+00:00,2026-07-01T04:53:08.356680+00:00,2
+3,shadow,Indices,NIFTY,,,,LONG,10.0000000000,,,[],OPEN,2026-07-01T04:53:08.243890+00:00,2026-07-01T04:53:08.315249+00:00,5
+4,shadow,Equity,NVDA,,,,LONG,56.2500000000,,,[],OPEN,2026-07-01T04:53:08.346017+00:00,2026-07-01T04:53:08.346217+00:00,2
+5,shadow,Equity,AMD,,,,LONG,50,160,,[],OPEN,2026-07-01T04:53:08.378165+00:00,2026-07-01T04:53:08.378172+00:00,1
+6,verified,Equity,,,,,LONG,10,400,,[],OPEN,2026-07-01T04:53:08.467710+00:00,2026-07-01T04:53:08.467715+00:00,1

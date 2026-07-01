@@ -1,0 +1,5 @@
+verified_symbol,count,correct,accuracy
+,2,1,0.5
+AMD,1,0,0.0
+NIFTY,5,4,0.8
+NVDA,1,0,0.0

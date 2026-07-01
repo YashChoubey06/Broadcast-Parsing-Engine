@@ -1,0 +1,13 @@
+table,count
+positions,6
+trade_events,0
+processed_messages,0
+manual_review_queue,0
+position_snapshots,0
+incoming_messages,12
+parser_predictions,10
+human_reviews,9
+shadow_events,6
+verified_events,8
+verified_labels,9
+schema_migrations,1

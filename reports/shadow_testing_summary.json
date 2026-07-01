@@ -1,0 +1,17 @@
+{
+  "total_reviews": 9,
+  "approval_rate": 0.6666666666666666,
+  "correction_rate": 0.4444444444444444,
+  "rejection_rate": 0.1111111111111111,
+  "manual_review_rate": 0.4444444444444444,
+  "complete_event_accuracy": 0.5555555555555556,
+  "action_accuracy": 0.6666666666666666,
+  "symbol_accuracy": 0.7777777777777778,
+  "percentage_accuracy": 0.6666666666666666,
+  "direction_accuracy": 0.7777777777777778,
+  "verified_shadow_position_differences": 3,
+  "metric_notes": {
+    "complete_event_accuracy": "Approximation: approved-as-parsed and not corrected, not a field-perfect equality across every event attribute.",
+    "manual_review_rate": "Approximation over persisted human review decisions in the local shadow-review database."
+  }
+}
