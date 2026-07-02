@@ -31,7 +31,6 @@ from typing import Optional
 from src.config import (
     DEFAULT_ENTRY_ALLOCATION_PCT,
     DEFAULT_PORTFOLIO_ID,
-    MAX_MODEL_ALLOCATION_PCT,
     PARSER_VERSION,
     ZERO_POSITION_TOLERANCE,
     STATUS_APPLIED,
@@ -49,7 +48,6 @@ from src.schemas import HoldingsResult, ParsedTradeEvent, PositionState, ReviewI
 
 # Tolerance for "close enough to zero → treat as closed"
 _ZERO_TOL = Decimal(ZERO_POSITION_TOLERANCE)
-_MAX_ALLOC = Decimal(MAX_MODEL_ALLOCATION_PCT)
 _DEFAULT_ALLOC = Decimal(DEFAULT_ENTRY_ALLOCATION_PCT)
 
 # Actions that must touch an existing position (not create one)
@@ -200,16 +198,9 @@ class HoldingsEngine:
                 processing_order=processing_order,
             )
 
-        # Duplicate BUY without explicit add signal
-        if existing and existing.status == "OPEN" and direction == "LONG":
-            return self._send_to_review(
-                event,
-                reason=(
-                    f"Existing {direction} position for {symbol} is already open. "
-                    "Use AGAIN BUY / ADD LONG to add to it."
-                ),
-                processing_order=processing_order,
-            )
+        # V2 semantics: repeated same-side entries increase exposure.
+        if existing and existing.status == "OPEN":
+            return self._handle_add(event, direction, processing_order)
 
         # Create new position
         alloc = event.quantity_percent or _DEFAULT_ALLOC
@@ -250,7 +241,7 @@ class HoldingsEngine:
 
         pos_before = self._clone(existing)
         added = event.quantity_percent or _DEFAULT_ALLOC
-        new_alloc = min(_MAX_ALLOC, existing.current_allocation_pct + added)
+        new_alloc = existing.current_allocation_pct + added
 
         # Weighted average entry price
         new_price = event.execution_price_primary

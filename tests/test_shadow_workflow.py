@@ -183,7 +183,7 @@ def test_foreign_keys_active():
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO parser_predictions (source_message_id, parser_version, model_version, prediction_json, created_at) VALUES ('invalid', 'v', 'v', '{}', '2020')")
 
-def test_shadow_reduction_uses_verified_baseline_when_shadow_empty(tmp_path):
+def test_shadow_profit_book_reduction_uses_verified_baseline_when_shadow_empty(tmp_path):
     csv_path = tmp_path / "initial_positions.csv"
     csv_path.write_text(
         "symbol,direction,current_allocation_pct,market_group\nNIFTY,LONG,100,Indices\n",
@@ -192,13 +192,35 @@ def test_shadow_reduction_uses_verified_baseline_when_shadow_empty(tmp_path):
     assert import_positions(csv_path, TEST_DB_PATH, dry_run=False, apply=True, confirm=True) == 0
 
     assert get_pos(TEST_DB_PATH, "shadow", "NIFTY") is None
-    res = ingest_message("baseline-reduce", "SELL 50% NIFTY", "Indices", TEST_DB_PATH)
+    res = ingest_message("baseline-reduce", "50% PROFIT BOOK IN NIFTY", "Indices", TEST_DB_PATH)
     assert res["status"] == "PENDING_REVIEW"
 
     verified = get_pos(TEST_DB_PATH, "verified", "NIFTY")
     shadow = get_pos(TEST_DB_PATH, "shadow", "NIFTY")
     assert verified["current_allocation_pct"] == "100"
     assert shadow["current_allocation_pct"] == "50.0000000000"
+
+def test_shadow_standalone_sell_against_verified_long_is_blocked(tmp_path):
+    csv_path = tmp_path / "initial_positions.csv"
+    csv_path.write_text(
+        "symbol,direction,current_allocation_pct,market_group\nNIFTY,LONG,100,Indices\n",
+        encoding="utf-8",
+    )
+    assert import_positions(csv_path, TEST_DB_PATH, dry_run=False, apply=True, confirm=True) == 0
+
+    res = ingest_message("standalone-sell-conflict", "SELL 50% NIFTY", "Indices", TEST_DB_PATH)
+    assert res["status"] == "PENDING_REVIEW"
+    event = res["event"]
+    assert event.final_action == "AMBIGUOUS"
+    assert event.surface_instruction == "SELL"
+    assert event.position_effect == "UNRESOLVED"
+
+    verified = get_pos(TEST_DB_PATH, "verified", "NIFTY")
+    shadow_long = get_pos(TEST_DB_PATH, "shadow", "NIFTY", "LONG")
+    shadow_short = get_pos(TEST_DB_PATH, "shadow", "NIFTY", "SHORT")
+    assert verified["current_allocation_pct"] == "100"
+    assert shadow_long is None
+    assert shadow_short is None
 
 def test_rejected_and_needs_context_reviews_export_as_training_candidates(tmp_path):
     ingest_message("reject-export", "BUY 50% AMD @160", "Equity", TEST_DB_PATH)

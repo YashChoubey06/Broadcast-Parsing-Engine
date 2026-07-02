@@ -58,6 +58,11 @@ _REVIEW_ACTIONS = {
     "CLOSE_GROUP", "SPLIT_REQUIRED",
 }
 
+_BASIS_COMPAT_MAP = {
+    "MODEL_ALLOCATION": "CUSTOMER_BUYING_CAPACITY",
+    "CURRENT_HOLDING": "CURRENT_POSITION",
+}
+
 
 class HybridParser:
     """
@@ -296,6 +301,12 @@ def _populate_event(
     event.is_multi_instrument = extraction.is_multi_instrument or rule_result.is_multi_instrument
     event.requires_context = rule_result.requires_context
     event.needs_review = rule_result.needs_review
+    event.semantics_version = "v2"
+    event.surface_instruction = rule_result.surface_instruction
+    event.entry_capacity_pct = rule_result.entry_capacity_pct
+    event.reduction_pct = rule_result.reduction_pct
+    event.position_effect = rule_result.position_effect
+    event.resolved_position_side = rule_result.resolved_position_side
 
     # Prices
     event.execution_prices = list(extraction.execution_prices)
@@ -315,7 +326,10 @@ def _populate_event(
         event.quantity_percent = extraction.quantity_percent
 
     if rule_result.quantity_basis and rule_result.quantity_basis != "UNKNOWN":
-        event.quantity_basis = rule_result.quantity_basis
+        event.quantity_basis = _BASIS_COMPAT_MAP.get(
+            rule_result.quantity_basis,
+            rule_result.quantity_basis,
+        )
     
     if rule_result.remaining_holding_multiplier is not None:
         event.remaining_holding_multiplier = rule_result.remaining_holding_multiplier
@@ -332,18 +346,32 @@ def _apply_defaults(event: ParsedTradeEvent) -> None:
         event.direction = "LONG"
     if action in ("OPEN_SHORT", "ADD_SHORT") and event.direction is None:
         event.direction = "SHORT"
+    if action in ("OPEN_LONG", "ADD_LONG"):
+        event.resolved_position_side = event.resolved_position_side or "LONG"
+        event.surface_instruction = event.surface_instruction or "BUY"
+    if action in ("OPEN_SHORT", "ADD_SHORT"):
+        event.resolved_position_side = event.resolved_position_side or "SHORT"
+        event.surface_instruction = event.surface_instruction or "SELL"
 
     # Default allocation for entry/add when no percentage was extracted
     if action in ("OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"):
         if event.quantity_percent is None:
             event.quantity_percent = Decimal(DEFAULT_ENTRY_ALLOCATION_PCT)
-            event.quantity_basis = "MODEL_ALLOCATION"
+        event.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
+        event.entry_capacity_pct = event.quantity_percent
+        event.position_effect = event.position_effect or "OPEN"
 
     # Default part profit percentage (rule should have set this, but safety net)
     if action == "REDUCE_POSITION" and event.quantity_percent is None:
         event.quantity_percent = Decimal(DEFAULT_PART_PROFIT_PCT)
-        event.quantity_basis = "CURRENT_HOLDING"
+        event.quantity_basis = "CURRENT_POSITION"
+        event.reduction_pct = event.quantity_percent
+        event.position_effect = event.position_effect or "DECREASE"
         event.validation_warnings.append("Quantity not extracted; defaulted to 25% part profit.")
+    elif action == "REDUCE_POSITION":
+        event.quantity_basis = "CURRENT_POSITION"
+        event.reduction_pct = event.reduction_pct or event.quantity_percent
+        event.position_effect = event.position_effect or "DECREASE"
 
     # Remaining holding multiplier for reduce
     if action == "REDUCE_POSITION" and event.quantity_percent is not None:
@@ -352,6 +380,8 @@ def _apply_defaults(event: ParsedTradeEvent) -> None:
 
     # Close always zeroes
     if action == "CLOSE_POSITION":
+        event.quantity_basis = "CURRENT_POSITION"
+        event.position_effect = event.position_effect or "CLOSE"
         event.remaining_holding_multiplier = Decimal("0")
 
     # Status-only actions

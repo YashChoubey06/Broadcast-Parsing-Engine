@@ -181,6 +181,73 @@ class TestReductionChain:
         assert pos_repo.get_position("default", "NIFTY", "LONG").current_allocation_pct == Decimal("12.5")
 
 
+class TestEntryAdditionSemantics:
+    def test_buy_50_sequence_reaches_150(self):
+        engine, pos_repo, _ = make_engine()
+
+        engine.apply_event(make_event(source_message_id="buy-1", final_action="OPEN_LONG",
+                                      symbol="TSLA", quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "LONG").current_allocation_pct == Decimal("50")
+
+        engine.apply_event(make_event(source_message_id="buy-2", final_action="OPEN_LONG",
+                                      symbol="TSLA", quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "LONG").current_allocation_pct == Decimal("100")
+
+        engine.apply_event(make_event(source_message_id="buy-3", final_action="OPEN_LONG",
+                                      symbol="TSLA", quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "LONG").current_allocation_pct == Decimal("150")
+
+    def test_sell_50_sequence_reaches_150(self):
+        engine, pos_repo, _ = make_engine()
+
+        engine.apply_event(make_event(source_message_id="sell-1", final_action="OPEN_SHORT",
+                                      symbol="TSLA", direction="SHORT",
+                                      quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "SHORT").current_allocation_pct == Decimal("50")
+
+        engine.apply_event(make_event(source_message_id="sell-2", final_action="OPEN_SHORT",
+                                      symbol="TSLA", direction="SHORT",
+                                      quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "SHORT").current_allocation_pct == Decimal("100")
+
+        engine.apply_event(make_event(source_message_id="sell-3", final_action="OPEN_SHORT",
+                                      symbol="TSLA", direction="SHORT",
+                                      quantity_percent=Decimal("50"),
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        assert pos_repo.get_position("default", "TSLA", "SHORT").current_allocation_pct == Decimal("150")
+
+    def test_plain_stock_buy_adds_100_each_time(self):
+        engine, pos_repo, _ = make_engine()
+
+        engine.apply_event(make_event(source_message_id="buy-nvda-1", final_action="OPEN_LONG",
+                                      symbol="NVDA", quantity_percent=None,
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        engine.apply_event(make_event(source_message_id="buy-nvda-2", final_action="OPEN_LONG",
+                                      symbol="NVDA", quantity_percent=None,
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+
+        assert pos_repo.get_position("default", "NVDA", "LONG").current_allocation_pct == Decimal("200.0")
+
+    def test_plain_stock_sell_adds_100_each_time(self):
+        engine, pos_repo, _ = make_engine()
+
+        engine.apply_event(make_event(source_message_id="sell-infy-1", final_action="OPEN_SHORT",
+                                      symbol="INFY", direction="SHORT",
+                                      quantity_percent=None,
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+        engine.apply_event(make_event(source_message_id="sell-infy-2", final_action="OPEN_SHORT",
+                                      symbol="INFY", direction="SHORT",
+                                      quantity_percent=None,
+                                      quantity_basis="CUSTOMER_BUYING_CAPACITY"))
+
+        assert pos_repo.get_position("default", "INFY", "SHORT").current_allocation_pct == Decimal("200.0")
+
+
 # ---------------------------------------------------------------------------
 # Test: Part profit (25% reductions)
 # ---------------------------------------------------------------------------
@@ -312,24 +379,26 @@ class TestDuplicateProcessing:
 # Test: Sell with existing long → reduce
 # ---------------------------------------------------------------------------
 class TestSellWithExistingLong:
-    def test_existing_long_parsed_as_reduce(self):
+    def test_existing_long_standalone_sell_is_blocked(self):
         """
-        The parser is pre-tested in test_rule_parser.py.
-        Here we confirm the engine applies it correctly.
+        Old invalid assumption: standalone SELL reduced an existing LONG.
+        Confirmed v2 behavior: it is an opposite-direction conflict.
         """
-        engine, pos_repo, _ = make_engine()
+        engine, pos_repo, review_repo = make_engine()
 
         # Open 100%
         engine.apply_event(make_event(source_message_id="open-001", final_action="OPEN_LONG",
                                       symbol="NIFTY", quantity_percent=Decimal("100")))
 
-        # Reduce 50% (simulating "Sell 50% Nifty" with existing long)
-        engine.apply_event(make_event(source_message_id="sell-001", final_action="REDUCE_POSITION",
-                                      symbol="NIFTY", quantity_percent=Decimal("50"),
-                                      quantity_basis="CURRENT_HOLDING"))
+        result = engine.apply_event(make_event(source_message_id="sell-001", final_action="OPEN_SHORT",
+                                               symbol="NIFTY", direction="SHORT",
+                                               quantity_percent=Decimal("50"),
+                                               quantity_basis="CUSTOMER_BUYING_CAPACITY"))
 
         pos = pos_repo.get_position("default", "NIFTY", "LONG")
-        assert pos.current_allocation_pct == Decimal("50")
+        assert result.status == "MANUAL_REVIEW"
+        assert pos.current_allocation_pct == Decimal("100")
+        assert len(review_repo.list_pending()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +438,22 @@ class TestOppositeDirection:
                                                final_action="OPEN_SHORT", symbol="NVDA",
                                                direction="SHORT"))
         assert result.status == "MANUAL_REVIEW"
+
+    def test_existing_short_new_long_goes_to_review(self):
+        engine, pos_repo, review_repo = make_engine()
+
+        engine.apply_event(make_event(source_message_id="short-setup",
+                                      final_action="OPEN_SHORT", symbol="TSLA",
+                                      direction="SHORT"))
+
+        result = engine.apply_event(make_event(source_message_id="long-conflict",
+                                               final_action="OPEN_LONG", symbol="TSLA",
+                                               direction="LONG"))
+
+        short_pos = pos_repo.get_position("default", "TSLA", "SHORT")
+        assert result.status == "MANUAL_REVIEW"
+        assert short_pos.current_allocation_pct == Decimal("100")
+        assert len(review_repo.list_pending()) == 1
 
 
 # ---------------------------------------------------------------------------

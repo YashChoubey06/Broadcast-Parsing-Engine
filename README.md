@@ -161,7 +161,7 @@ After training, reports are written to `reports/`:
 python -m src.parse_message --text "50% PROFIT BOOK IN NIFTY @25942"
 ```
 
-With holdings context (resolves SELL ambiguity):
+With holdings context (routes unsafe opposite-side standalone entries to review):
 
 ```powershell
 python -m src.parse_message `
@@ -346,6 +346,25 @@ database deployment.
 
 ## Core business rule
 
+Entry percentages are customer buying-capacity units:
+
+```
+BUY 50% TSLA  -> add 50 LONG capacity units
+SELL 50% TSLA -> add 50 SHORT capacity units
+```
+
+Repeated same-side entries add exposure and may exceed 100:
+
+```
+BUY 50% TSLA -> LONG 50
+BUY 50% TSLA -> LONG 100
+BUY 50% TSLA -> LONG 150
+```
+
+Standalone opposite-side instructions require context. Existing `LONG` + standalone
+`SELL`, or existing `SHORT` + standalone `BUY`, is routed to review unless an
+explicit close/reduction clause precedes it.
+
 All reduction percentages apply to the **current holding**, not the original:
 
 ```
@@ -356,10 +375,10 @@ Example chain (must be exact with Decimal arithmetic):
 
 ```
 Start: 100%
-Sell 50%:  50% remains
-Sell 50%:  25% remains
-Sell 50%:  12.5% remains
-Sell 50%:  6.25% remains
+50% profit book:  50% remains
+50% profit book:  25% remains
+50% profit book:  12.5% remains
+50% profit book:  6.25% remains
 ```
 
 Part profit = 25% of current holding.
@@ -384,8 +403,9 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 3. **No real-time feed**: The system processes messages in batch from CSV files.
 4. **Missing portfolio start**: The production dataset may not start from an empty portfolio. Reduction/close messages without a known open position go to manual review.
 5. **Group actions**: `CLOSE_GROUP` is classified and reviewed but not automatically applied.
-6. **Option contracts**: Strike/option type are extracted but position keying is simplified in this version.
-7. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
+6. **Position identity**: Full market/contract/option identity enforcement is deferred to Phase 2; current lookup behavior remains simplified.
+7. **Option contracts**: Strike/option type are extracted but position keying is simplified in this version.
+8. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
 
 ---
 
@@ -393,7 +413,7 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 
 - **Never auto-apply corrections**: They require context linking to prior events.
 - **Never auto-apply conditional instructions**: They require external condition confirmation.
-- **Never silently treat SELL as a short**: SELL resolution depends on existing holdings context.
+- **Never treat standalone opposite-side entries as closes or reductions**: Existing `LONG` + `SELL`, or existing `SHORT` + `BUY`, requires context unless explicit close/reduction language is present.
 - **Never allow ML predictions to bypass validation**: Confidence < 0.95 does not auto-apply.
 - **Never process the same message_id twice**: The idempotency layer prevents duplicate application.
 - **Never reset the database without `--confirm-reset`**: The flag is mandatory.

@@ -52,6 +52,20 @@ class TestSymbolExtraction:
         assert er.symbol is None
         assert er.symbols == []
 
+    def test_buy_percentage_unknown_ticker_fallback(self):
+        ex = make_extractor()
+        er = ex.extract("BUY 50% TSLA")
+        assert er.symbol_raw == "TSLA"
+        assert er.symbol == "TSLA"
+        assert er.symbols == ["TSLA"]
+
+    def test_sell_percentage_unknown_ticker_fallback(self):
+        ex = make_extractor()
+        er = ex.extract("SELL 50% TSLA")
+        assert er.symbol_raw == "TSLA"
+        assert er.symbol == "TSLA"
+        assert er.symbols == ["TSLA"]
+
 
 class TestPercentageExtraction:
     def test_explicit_percentage(self):

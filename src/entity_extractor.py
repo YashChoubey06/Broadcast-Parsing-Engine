@@ -102,6 +102,15 @@ _STRIKE_RE = re.compile(
 # Direction hints in text
 _LONG_RE = re.compile(r"\b(BUY|LONG|ADD\s+LONG|AGAIN\s+BUY|RE-?BUY)\b", re.IGNORECASE)
 _SHORT_RE = re.compile(r"\b(SELL|SHORT|ADD\s+SHORT|AGAIN\s+SELL)\b", re.IGNORECASE)
+_ENTRY_SYMBOL_FALLBACK_RE = re.compile(
+    r"\b(?:BUY|SELL)\s+\d+(?:\.\d+)?\s*%\s+([A-Z][A-Z0-9._-]{1,14})\b",
+    re.IGNORECASE,
+)
+_SYMBOL_FALLBACK_STOPWORDS = {
+    "AT", "CMP", "ABOVE", "BELOW", "IF", "WHEN", "WITH", "SL", "STOP",
+    "TGT", "TARGET", "PROFIT", "BOOK", "FULL", "PART", "EXIT", "FROM",
+    "POSITION", "POSITIONS", "LONG", "SHORT",
+}
 
 # Correction flag
 _CORRECTION_RE = re.compile(r"\bCORRECTION\b", re.IGNORECASE)
@@ -269,6 +278,15 @@ class EntityExtractor:
                 er.is_multi_instrument = True
                 er.symbol_raw = " & ".join(m[0] for m in matches)
                 er.symbol = None  # ambiguous – let caller decide
+
+        if not er.symbols:
+            fallback = _ENTRY_SYMBOL_FALLBACK_RE.search(upper)
+            if fallback:
+                candidate = fallback.group(1).strip().upper()
+                if candidate not in _SYMBOL_FALLBACK_STOPWORDS and not candidate[0].isdigit():
+                    er.symbol_raw = candidate
+                    er.symbol = candidate
+                    er.symbols = [candidate]
 
         # ---- Contract month ------------------------------------------------
         m = _CONTRACT_MONTH_RE.search(text)

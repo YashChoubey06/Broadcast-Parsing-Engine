@@ -20,7 +20,7 @@ class TestR01_ProfitBook:
         r = apply_rules(text, _extract(text))
         assert r.rule_action == "REDUCE_POSITION"
         assert r.quantity_percent == Decimal("50")
-        assert r.quantity_basis == "CURRENT_HOLDING"
+        assert r.quantity_basis == "CURRENT_POSITION"
 
     def test_remaining_multiplier(self):
         text = "50% PROFIT BOOK IN NIFTY"
@@ -38,7 +38,7 @@ class TestR01_ProfitBook:
         r = apply_rules(text, _extract(text), existing_long=True, has_holdings_context=True)
         assert r.rule_action == "REDUCE_POSITION"
         assert r.quantity_percent == Decimal("50")
-        assert r.quantity_basis == "CURRENT_HOLDING"
+        assert r.quantity_basis == "CURRENT_POSITION"
         assert r.remaining_holding_multiplier == Decimal("0.5")
 
 
@@ -188,22 +188,31 @@ class TestAddShort:
 
 
 class TestSellAmbiguity:
-    def test_rule_a_existing_long(self):
+    def test_existing_long_standalone_sell_conflicts(self):
         """Rule A: existing long + sell → reduce."""
         text = "Sell 50% Nifty"
         r = apply_rules(text, _extract(text), existing_long=True)
-        assert r.rule_action == "REDUCE_POSITION"
-        assert r.quantity_percent == Decimal("50")
+        assert r.rule_action == "AMBIGUOUS"
+        assert r.surface_instruction == "SELL"
+        assert r.position_effect == "UNRESOLVED"
+        assert r.resolved_position_side == "SHORT"
+        assert r.requires_context
+        assert r.needs_review
 
-    def test_rule_c_no_long_short_cues(self):
+    def test_no_long_sell_opens_short(self):
         """Rule C: no long, clear short cues → open short."""
         text = "Sell copper @6.43 with sl 6.51 for target 6.30"
         r = apply_rules(text, _extract(text), existing_long=False, has_holdings_context=True)
         assert r.rule_action == "OPEN_SHORT"
+        assert r.surface_instruction == "SELL"
+        assert r.quantity_basis == "CUSTOMER_BUYING_CAPACITY"
+        assert r.position_effect == "OPEN"
+        assert r.resolved_position_side == "SHORT"
 
-    def test_rule_d_ambiguous(self):
-        """Rule D: no context → AMBIGUOUS."""
+    def test_sell_without_context_is_short_entry(self):
+        """Old invalid assumption: no-context SELL was ambiguous."""
         text = "Sell 50% XYZ"
         r = apply_rules(text, _extract(text), has_holdings_context=False)
-        assert r.rule_action == "AMBIGUOUS"
-        assert r.needs_review
+        assert r.rule_action == "OPEN_SHORT"
+        assert r.quantity_percent == Decimal("50")
+        assert r.entry_capacity_pct == Decimal("50")

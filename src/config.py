@@ -42,6 +42,9 @@ DEFAULT_PORTFOLIO_ID = "default"
 DEFAULT_ENTRY_ALLOCATION_PCT = "100.0"    # Decimal string – full model allocation
 MAX_MODEL_ALLOCATION_PCT = "100.0"        # Decimal string – cap on any position
 
+# Deprecated for v2 semantics: MAX_MODEL_ALLOCATION_PCT is no longer applied
+# to entry/add exposure. Valid repeated entries may exceed 100 units.
+
 # ---------------------------------------------------------------------------
 # Reduction semantics
 # ---------------------------------------------------------------------------

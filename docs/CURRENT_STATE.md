@@ -1,6 +1,6 @@
 # Current State
 
-Last updated during stabilization before shadow acceptance testing.
+Last updated after Phase 1 v2 trade-semantics implementation.
 
 ## Git
 
@@ -17,6 +17,36 @@ Last updated during stabilization before shadow acceptance testing.
 - Streamlit human-review app.
 - Shadow ingestion CLIs, verified-position import, verified-label export, and shadow metrics.
 - Audit and report scripts under `scripts/`.
+- Phase 1 v2 semantics for surface instructions, entry capacity units, current-position reductions, and opposite-side conflict handling.
+
+## Phase 1 Semantics
+
+Newly parsed events use `semantics_version = "v2"` and may include:
+
+- `surface_instruction`
+- `entry_capacity_pct`
+- `reduction_pct`
+- `position_effect`
+- `resolved_position_side`
+
+Entry and same-side addition percentages are customer buying-capacity units:
+
+- `BUY 50% TSLA` opens or increases `LONG` exposure by `50`.
+- `SELL 50% TSLA` opens or increases `SHORT` exposure by `50`.
+- Repeated same-side entries add capacity units and may exceed `100`.
+- Individual stock entries with no explicit percentage default to `100` capacity units when the symbol is confidently extracted.
+
+Reduction percentages apply to the current position:
+
+- `PART PROFIT` reduces the current position by `25%`.
+- `50% PROFIT BOOK` reduces the current position by `50%`.
+- Repeated reductions compound on the remaining exposure.
+
+Standalone opposite-side entries require context:
+
+- Existing `LONG` + standalone `SELL` is `OPPOSITE_DIRECTION_CONFLICT` / review.
+- Existing `SHORT` + standalone `BUY` is `OPPOSITE_DIRECTION_CONFLICT` / review.
+- Ordered reversal handling remains deferred to Phase 3.
 
 ## Database Architecture
 
@@ -88,7 +118,7 @@ Shadow workflow code and tests are present. The stabilization pass fixed literal
 - `final_action = REDUCE_POSITION`
 - `symbol = RELIANCE`
 - `quantity_percent = 50`
-- `quantity_basis = CURRENT_HOLDING`
+- `quantity_basis = CURRENT_POSITION`
 
 End-to-end shadow acceptance testing has not started yet.
 
@@ -100,10 +130,16 @@ Command:
 .\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short
 ```
 
-Result:
+Current Phase 1 focused verification:
 
-- Collected: `130`
-- Passed: `130`
+- Parser tests: `78 passed`
+- Holdings-engine tests: `18 passed`
+- Shadow-workflow tests: `15 passed`, `6 warnings`
+
+Full suite:
+
+- Collected: `148`
+- Passed: `148`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
@@ -152,9 +188,10 @@ Use `storage/shadow_acceptance.db` for acceptance testing.
 - Real-time feed ingestion is not implemented.
 - Production data may not begin from a verified empty portfolio.
 - Group actions are reviewed but not automatically applied.
-- Option-contract keying remains simplified.
+- Position identity remains a known Phase 2 limitation: repository lookups still primarily use portfolio, symbol, and direction; full market/contract/option identity enforcement is not implemented yet.
+- Option-contract keying remains simplified until Phase 2.
 - SQLite is local and single-writer oriented.
 
 ## Next Planned Task
 
-Run end-to-end shadow acceptance testing.
+Phase 2: enforce full instrument position identity and guarded unique-candidate fallback.

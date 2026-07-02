@@ -105,6 +105,11 @@ class RuleParseResult:
         "needs_review",
         "rule_confidence",
         "rule_notes",
+        "surface_instruction",
+        "entry_capacity_pct",
+        "reduction_pct",
+        "position_effect",
+        "resolved_position_side",
     )
 
     def __init__(self):
@@ -122,6 +127,11 @@ class RuleParseResult:
         self.needs_review: bool = False
         self.rule_confidence: float = 0.0
         self.rule_notes: str = ""
+        self.surface_instruction: Optional[str] = None
+        self.entry_capacity_pct: Optional[Decimal] = None
+        self.reduction_pct: Optional[Decimal] = None
+        self.position_effect: Optional[str] = None
+        self.resolved_position_side: Optional[str] = None
 
 
 def apply_rules(
@@ -171,6 +181,8 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.is_conditional:
         r.rule_action = "CONDITIONAL_INSTRUCTION"
+        r.surface_instruction = "CONDITIONAL"
+        r.position_effect = "UNRESOLVED"
         r.is_conditional = True
         r.requires_context = True
         r.auto_apply_eligible = False
@@ -196,6 +208,7 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_group_action or _GROUP_EXIT_RE.search(text):
         r.rule_action = "CLOSE_GROUP"
+        r.position_effect = "UNRESOLVED"
         r.is_group_action = True
         r.requires_context = True
         r.auto_apply_eligible = False
@@ -209,9 +222,11 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_sl_touch:
         r.rule_action = "CLOSE_POSITION"
+        r.surface_instruction = "SL_TOUCH"
         r.quantity_percent = Decimal("100")
-        r.quantity_basis = "CURRENT_HOLDING"
+        r.quantity_basis = "CURRENT_POSITION"
         r.remaining_holding_multiplier = Decimal("0")
+        r.position_effect = "CLOSE"
         r.rule_confidence = 1.0
         r.rule_notes = "SL touched; full close of remaining holding."
         # auto_apply set after symbol check in validator
@@ -222,9 +237,11 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_full_profit and not extraction.quantity_percent:
         r.rule_action = "CLOSE_POSITION"
+        r.surface_instruction = "BOOK_FULL" if "PROFIT" in text.upper() or "BOOK" in text.upper() else "EXIT"
         r.quantity_percent = Decimal("100")
-        r.quantity_basis = "CURRENT_HOLDING"
+        r.quantity_basis = "CURRENT_POSITION"
         r.remaining_holding_multiplier = Decimal("0")
+        r.position_effect = "CLOSE"
         r.rule_confidence = 1.0
         r.rule_notes = "Full profit / exit; close entire remaining holding."
         return r
@@ -234,9 +251,12 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_part_profit:
         r.rule_action = "REDUCE_POSITION"
+        r.surface_instruction = "BOOK_PART"
         r.quantity_percent = Decimal("25")
-        r.quantity_basis = "CURRENT_HOLDING"
+        r.quantity_basis = "CURRENT_POSITION"
+        r.reduction_pct = Decimal("25")
         r.remaining_holding_multiplier = Decimal("0.75")
+        r.position_effect = "DECREASE"
         r.rule_confidence = 1.0
         r.rule_notes = "Part profit: 25% of current holding reduced."
         return r
@@ -260,9 +280,12 @@ def apply_rules(
     if (has_profit_lang or book_pct_profit_match) and _parsed_pct is not None:
         pct = _parsed_pct
         r.rule_action = "REDUCE_POSITION"
+        r.surface_instruction = "BOOK_PERCENT"
         r.quantity_percent = pct
-        r.quantity_basis = "CURRENT_HOLDING"
+        r.quantity_basis = "CURRENT_POSITION"
+        r.reduction_pct = pct
         r.remaining_holding_multiplier = Decimal("1") - pct / Decimal("100")
+        r.position_effect = "DECREASE"
         r.rule_confidence = 1.0
         r.rule_notes = f"{pct}% profit book: reduce current holding."
         return r
@@ -276,9 +299,12 @@ def apply_rules(
         if pct is None:
             pct = Decimal(reduce_pct_match.group(1))
         r.rule_action = "REDUCE_POSITION"
+        r.surface_instruction = "BOOK_PERCENT"
         r.quantity_percent = pct
-        r.quantity_basis = "CURRENT_HOLDING"
+        r.quantity_basis = "CURRENT_POSITION"
+        r.reduction_pct = pct
         r.remaining_holding_multiplier = Decimal("1") - pct / Decimal("100")
+        r.position_effect = "DECREASE"
         r.rule_confidence = 1.0
         r.rule_notes = f"Explicit reduce {pct}%: reduce current holding."
         return r
@@ -288,7 +314,9 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_target_touch:
         r.rule_action = "TARGET_HIT"
+        r.surface_instruction = "TARGET_HIT"
         r.quantity_basis = "NONE"
+        r.position_effect = "STATUS_ONLY"
         r.rule_confidence = 1.0
         r.rule_notes = "Target hit status event; no automatic holding change."
         return r
@@ -298,14 +326,18 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_hold and extraction.stop_loss is not None:
         r.rule_action = "UPDATE_STOP_LOSS"
+        r.surface_instruction = "UPDATE_STOP"
         r.quantity_basis = "NONE"
+        r.position_effect = "UPDATE_STOP"
         r.rule_confidence = 1.0
         r.rule_notes = "Hold with SL: update stop loss only."
         return r
 
     if _POSITIONAL_SL_RE.search(text):
         r.rule_action = "UPDATE_STOP_LOSS"
+        r.surface_instruction = "UPDATE_STOP"
         r.quantity_basis = "NONE"
+        r.position_effect = "UPDATE_STOP"
         r.rule_confidence = 1.0
         r.rule_notes = "Positional SL: update stop loss only."
         return r
@@ -315,7 +347,9 @@ def apply_rules(
     # ------------------------------------------------------------------
     if extraction.has_hold:
         r.rule_action = "HOLD_POSITION"
+        r.surface_instruction = "HOLD"
         r.quantity_basis = "NONE"
+        r.position_effect = "HOLD"
         r.rule_confidence = 1.0
         r.rule_notes = "Hold: no quantity change."
         return r
@@ -326,11 +360,15 @@ def apply_rules(
     if _AGAIN_ADD_RE.search(text):
         r.rule_action = "ADD_LONG"
         r.direction = "LONG"
-        r.quantity_basis = "MODEL_ALLOCATION"
+        r.surface_instruction = "BUY"
+        r.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
+        r.position_effect = "INCREASE"
+        r.resolved_position_side = "LONG"
         r.rule_confidence = 1.0
         r.rule_notes = "Again buy / add long."
         if extraction.quantity_percent:
             r.quantity_percent = extraction.quantity_percent
+            r.entry_capacity_pct = extraction.quantity_percent
         return r
 
     # ------------------------------------------------------------------
@@ -339,22 +377,40 @@ def apply_rules(
     if _AGAIN_SHORT_RE.search(text):
         r.rule_action = "ADD_SHORT"
         r.direction = "SHORT"
-        r.quantity_basis = "MODEL_ALLOCATION"
+        r.surface_instruction = "SELL"
+        r.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
+        r.position_effect = "INCREASE"
+        r.resolved_position_side = "SHORT"
         r.rule_confidence = 1.0
         r.rule_notes = "Again sell / add short."
         if extraction.quantity_percent:
             r.quantity_percent = extraction.quantity_percent
+            r.entry_capacity_pct = extraction.quantity_percent
         return r
 
     # ------------------------------------------------------------------
     # Priority 15: PLAIN BUY  → OPEN_LONG (or review if duplicate)
     # ------------------------------------------------------------------
     if _PLAIN_BUY_RE.search(text) and not _PLAIN_SELL_RE.search(text):
+        if existing_short:
+            r.rule_action = "AMBIGUOUS"
+            r.surface_instruction = "BUY"
+            r.position_effect = "UNRESOLVED"
+            r.resolved_position_side = "LONG"
+            r.requires_context = True
+            r.needs_review = True
+            r.rule_confidence = 1.0
+            r.rule_notes = "OPPOSITE_DIRECTION_CONFLICT: existing short + standalone buy requires context."
+            return r
         r.rule_action = "OPEN_LONG"
         r.direction = "LONG"
-        r.quantity_basis = "MODEL_ALLOCATION"
+        r.surface_instruction = "BUY"
+        r.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
+        r.position_effect = "INCREASE" if existing_long else "OPEN"
+        r.resolved_position_side = "LONG"
         if extraction.quantity_percent:
             r.quantity_percent = extraction.quantity_percent
+            r.entry_capacity_pct = extraction.quantity_percent
         r.rule_confidence = 0.95
         r.rule_notes = "Buy instruction."
         return r
@@ -399,6 +455,52 @@ def _resolve_sell(
     r = RuleParseResult()
 
     has_profit_lang = bool(_PROFIT_LANG_RE.search(text))
+    pct = extraction.quantity_percent
+
+    if has_profit_lang:
+        if pct:
+            r.rule_action = "REDUCE_POSITION"
+            r.surface_instruction = "BOOK_PERCENT"
+            r.quantity_percent = pct
+            r.quantity_basis = "CURRENT_POSITION"
+            r.reduction_pct = pct
+            r.remaining_holding_multiplier = Decimal("1") - pct / Decimal("100")
+            r.position_effect = "DECREASE"
+        else:
+            r.rule_action = "CLOSE_POSITION"
+            r.surface_instruction = "BOOK_FULL"
+            r.quantity_percent = Decimal("100")
+            r.quantity_basis = "CURRENT_POSITION"
+            r.remaining_holding_multiplier = Decimal("0")
+            r.position_effect = "CLOSE"
+        r.rule_confidence = 1.0
+        r.rule_notes = "Profit language: reduce or close existing position."
+        return r
+
+    if existing_long:
+        r.rule_action = "AMBIGUOUS"
+        r.surface_instruction = "SELL"
+        r.position_effect = "UNRESOLVED"
+        r.resolved_position_side = "SHORT"
+        r.requires_context = True
+        r.needs_review = True
+        r.rule_confidence = 1.0
+        r.rule_notes = "OPPOSITE_DIRECTION_CONFLICT: existing long + standalone sell requires context."
+        return r
+
+    r.rule_action = "OPEN_SHORT"
+    r.direction = "SHORT"
+    r.surface_instruction = "SELL"
+    r.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
+    r.position_effect = "INCREASE" if existing_short else "OPEN"
+    r.resolved_position_side = "SHORT"
+    if pct:
+        r.quantity_percent = pct
+        r.entry_capacity_pct = pct
+    r.rule_confidence = 0.95
+    r.rule_notes = "Sell instruction: short entry/add."
+    return r
+
     has_sl = extraction.stop_loss is not None
     has_target = bool(extraction.targets)
     has_pct = extraction.quantity_percent is not None

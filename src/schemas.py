@@ -60,6 +60,14 @@ class ParsedTradeEvent:
     final_action: str = "UNKNOWN"
     resolution_source: str = "MANUAL_REVIEW"  # RULE | ML | RULE_AND_ML_AGREE | CONTEXT_RESOLVED | MANUAL_REVIEW
 
+    # ---- Confirmed semantics (v2) -----------------------------------------
+    semantics_version: str = "v2"
+    surface_instruction: Optional[str] = None
+    entry_capacity_pct: Optional[Decimal] = None
+    reduction_pct: Optional[Decimal] = None
+    position_effect: Optional[str] = None
+    resolved_position_side: Optional[str] = None
+
     # ---- Instrument --------------------------------------------------------
     symbol_raw: Optional[str] = None
     symbol: Optional[str] = None
@@ -120,17 +128,30 @@ class ParsedTradeEvent:
     @classmethod
     def from_json(cls, json_str: str) -> "ParsedTradeEvent":
         d = json.loads(json_str)
-        if d.get("strike_price") is not None:
-            d["strike_price"] = Decimal(str(d["strike_price"]))
-        if d.get("quantity_percent") is not None:
-            d["quantity_percent"] = Decimal(str(d["quantity_percent"]))
+        for field_name in (
+            "strike_price",
+            "quantity_percent",
+            "entry_capacity_pct",
+            "reduction_pct",
+            "stop_loss",
+        ):
+            if d.get(field_name) is not None:
+                d[field_name] = Decimal(str(d[field_name]))
+
+        if d.get("execution_prices") is not None:
+            d["execution_prices"] = [Decimal(str(x)) for x in d["execution_prices"]]
         if d.get("entry_prices") is not None:
-            d["entry_prices"] = [Decimal(str(x)) for x in d["entry_prices"]]
-        if d.get("stop_loss") is not None:
-            d["stop_loss"] = Decimal(str(d["stop_loss"]))
+            d["execution_prices"] = [Decimal(str(x)) for x in d.pop("entry_prices")]
         if d.get("targets") is not None:
             d["targets"] = [Decimal(str(x)) for x in d["targets"]]
-            
+
+        if d.get("quantity_basis") == "MODEL_ALLOCATION":
+            d["quantity_basis"] = "CUSTOMER_BUYING_CAPACITY"
+        elif d.get("quantity_basis") == "CURRENT_HOLDING":
+            d["quantity_basis"] = "CURRENT_POSITION"
+
+        field_names = set(cls.__dataclass_fields__)
+        d = {k: v for k, v in d.items() if k in field_names}
         return cls(**d)
 
 
