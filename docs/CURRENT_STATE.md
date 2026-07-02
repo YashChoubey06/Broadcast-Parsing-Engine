@@ -1,6 +1,6 @@
 # Current State
 
-Last updated after Phase 3 ordered reversal handling.
+Last updated after Phase 4 reversal candidate recovery scanner.
 
 ## Git
 
@@ -20,6 +20,7 @@ Last updated after Phase 3 ordered reversal handling.
 - Phase 1 v2 semantics for surface instructions, entry capacity units, current-position reductions, and opposite-side conflict handling.
 - Phase 2 full instrument identity normalisation, exact lookup, guarded fallback, duplicate auditing, and SQLite identity indexes.
 - Phase 3 atomic ordered reversal handling for explicit complete-close followed by opposite-side entry messages.
+- Phase 4 raw CSV candidate recovery scanner that creates local human-review candidates only.
 
 ## Phase 1 Semantics
 
@@ -136,6 +137,38 @@ Portfolios are separated by `positions.portfolio_id`:
 
 SQLite is suitable for this controlled local workflow, but it remains a limited single-writer database and is not a high-concurrency production review backend.
 
+## Phase 4 Candidate Recovery
+
+Phase 4 adds a read-only scanner for the immutable source file:
+
+```text
+data/raw/broadcast_admin.broadcasts.csv
+```
+
+The scanner fails closed unless the source has exactly `1704` data rows and SHA-256:
+
+```text
+824d76f16474c4dd08cf72e9382462169621510a4c861ed3bd941755f3ffad65
+```
+
+Local generated outputs:
+
+- `data/review/phase4_reversal_candidates.csv`
+- `data/review/phase4_reversal_candidates_manifest.json`
+- `reports/phase4_reversal_candidate_summary.json`
+- `reports/phase4_reversal_candidate_reason_counts.csv`
+- `reports/phase4_reversal_parser_comparison.csv`
+- `reports/phase4_reversal_source_integrity.json`
+
+The candidate CSV and manifest contain proprietary source text and are ignored by Git. Aggregate reports contain counts, IDs, and parser comparison metadata, not full raw message text.
+
+Every generated candidate starts with:
+
+- `review_status = PENDING_REVIEW`
+- `use_for_training = false`
+
+No Phase 4 candidate is a trusted label. Holdings context is not reconstructed during the raw scan, so context validation is explicitly marked as not run. The scanner records structural parser evidence and Phase 3 bundle-parser comparison fields for human review.
+
 ## Model
 
 - Local project interpreter: `C:\Astrodunia text parsing\trade_message_system\.venv\Scripts\python.exe`
@@ -195,13 +228,18 @@ Current focused verification:
 
 Full suite:
 
-- Collected: `179`
-- Passed: `179`
+- Collected: `197`
+- Passed: `197`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
 
 Warnings are NumPy/joblib deprecation warnings during model unpickling, not scikit-learn version mismatch warnings.
+
+Phase 4 focused tests:
+
+- `18 passed`
+- `6` NumPy/joblib deprecation warnings during model unpickling
 
 ## Commands
 
@@ -250,4 +288,4 @@ Use `storage/shadow_acceptance.db` for acceptance testing.
 
 ## Next Planned Task
 
-Phase 4 remains deferred: raw CSV recovery, relabelling, retraining, and fresh acceptance testing must not start without explicit approval.
+Human review of Phase 4 candidates remains pending. Dataset relabelling, model retraining, historical replay regeneration, operational database migration, shadow acceptance testing, and Phase 5 remain blocked until human review is complete and explicitly approved.

@@ -272,6 +272,34 @@ Export human-reviewed labels for future training:
 .\.venv\Scripts\python.exe -m src.export_verified_training_data --output data/verified_shadow_labels.csv
 ```
 
+## Phase 4 raw reversal candidate recovery
+
+Phase 4 creates a local human-review dataset from the immutable raw CSV:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/phase4_reversal_candidate_scanner.py
+```
+
+The scanner fails closed unless `data/raw/broadcast_admin.broadcasts.csv` has
+exactly 1,704 data rows and SHA-256
+`824d76f16474c4dd08cf72e9382462169621510a4c861ed3bd941755f3ffad65`.
+
+Generated local outputs:
+
+| File | Contents |
+|------|----------|
+| `data/review/phase4_reversal_candidates.csv` | Proprietary raw-text candidate rows for human review only |
+| `data/review/phase4_reversal_candidates_manifest.json` | Candidate schema, source integrity, IDs, and aggregate totals |
+| `reports/phase4_reversal_candidate_summary.json` | Aggregate counts and candidate IDs only |
+| `reports/phase4_reversal_candidate_reason_counts.csv` | Inclusion-reason counts |
+| `reports/phase4_reversal_parser_comparison.csv` | Phase 3 parser comparison metadata |
+| `reports/phase4_reversal_source_integrity.json` | Source hash, row count, and headers |
+
+Every candidate starts as `PENDING_REVIEW` with `use_for_training=false`.
+No Phase 4 candidate is a trusted label. The scan does not reconstruct
+holdings context, does not apply events, does not relabel datasets, does not
+retrain the model, does not migrate databases, and does not start Phase 5.
+
 ---
 
 ## Run tests
@@ -445,6 +473,7 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 6. **Multi-clause reversals**: Only explicit complete-close then opposite-entry ordered reversals are automatic. Partial-profit reversals, more than two actionable clauses, and simultaneous independent long/short cases still require review.
 7. **Dataset/model follow-up**: Raw CSV candidate recovery, dataset relabelling, model retraining, historical replay regeneration, operational database migration, and fresh historical/shadow acceptance are not part of Phase 3.
 8. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
+9. **Phase 4 review boundary**: Recovered raw candidates are review evidence only. Phase 5 remains blocked until human review is complete and explicitly approved.
 
 ---
 
