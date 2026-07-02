@@ -12,6 +12,24 @@ dist/
 env/
 venv/
 ENV/
+# Raw and proprietary local datasets
+data/raw/*.csv
+
+# Local portfolio files and reviewed-label exports
+data/verified_initial_positions_current.csv
+data/verified_shadow_labels.csv
+
+# Local operational SQLite databases
+storage/shadow_manual*.db
+storage/archive/*.db
+
+# SQLite temporary files
+storage/*.db-wal
+storage/*.db-shm
+storage/*.db-journal
+storage/archive/*.db-wal
+storage/archive/*.db-shm
+storage/archive/*.db-journal
 
 # Models (regenerate with train_model.py)
 models/action_classifier.joblib
