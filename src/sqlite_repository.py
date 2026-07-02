@@ -254,18 +254,19 @@ class SQLiteTradeEventRepository:
             """
             INSERT INTO trade_events (
                 source_message_id, processing_order, raw_text, normalized_text,
-                record_type, final_action, symbol, direction, quantity_percent,
+                clause_text, record_type, final_action, symbol, direction, quantity_percent,
                 quantity_basis, execution_prices_json, stop_loss, targets_json,
                 model_confidence, resolution_source, position_before_json,
                 position_after_json, processing_status, created_at, processed_at,
                 parser_version, parent_source_message_id, child_event_index
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 event_record.get("source_message_id"),
                 event_record.get("processing_order"),
                 event_record.get("raw_text"),
                 event_record.get("normalized_text"),
+                event_record.get("clause_text"),
                 event_record.get("record_type"),
                 event_record.get("final_action"),
                 event_record.get("symbol"),

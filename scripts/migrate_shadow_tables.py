@@ -27,6 +27,8 @@ def apply_migration(db_path: Path | None = None):
         migration_name = "001_shadow_testing_tables"
         cursor.execute("SELECT 1 FROM schema_migrations WHERE migration_name = ?", (migration_name,))
         if cursor.fetchone():
+            _ensure_ordered_event_columns(cursor)
+            conn.commit()
             print(f"Migration {migration_name} already applied.")
             return
 
@@ -85,7 +87,11 @@ def apply_migration(db_path: Path | None = None):
             -- Shadow events
             CREATE TABLE IF NOT EXISTS shadow_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_message_id TEXT NOT NULL UNIQUE,
+                source_message_id TEXT NOT NULL,
+                child_source_message_id TEXT,
+                parent_source_message_id TEXT,
+                child_event_index INTEGER,
+                clause_text TEXT,
                 parsed_event_json TEXT NOT NULL,
                 position_before_json TEXT,
                 position_after_json TEXT,
@@ -97,7 +103,11 @@ def apply_migration(db_path: Path | None = None):
             -- Verified events
             CREATE TABLE IF NOT EXISTS verified_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_message_id TEXT NOT NULL UNIQUE,
+                source_message_id TEXT NOT NULL,
+                child_source_message_id TEXT,
+                parent_source_message_id TEXT,
+                child_event_index INTEGER,
+                clause_text TEXT,
                 approved_event_json TEXT NOT NULL,
                 position_before_json TEXT,
                 position_after_json TEXT,
@@ -131,6 +141,7 @@ def apply_migration(db_path: Path | None = None):
         """
         
         cursor.executescript(sql)
+        _ensure_ordered_event_columns(cursor)
         
         checksum = hashlib.sha256(sql.encode('utf-8')).hexdigest()
         from datetime import timezone
@@ -140,6 +151,21 @@ def apply_migration(db_path: Path | None = None):
         )
         conn.commit()
         print("Migration complete.")
+
+
+def _ensure_ordered_event_columns(cursor):
+    for table_name in ("shadow_events", "verified_events"):
+        existing_cols = {
+            row[1] for row in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        for col_name, col_type in (
+            ("child_source_message_id", "TEXT"),
+            ("parent_source_message_id", "TEXT"),
+            ("child_event_index", "INTEGER"),
+            ("clause_text", "TEXT"),
+        ):
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
 
 if __name__ == "__main__":
     import argparse

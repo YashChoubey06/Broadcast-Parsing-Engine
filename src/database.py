@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS trade_events (
     processing_order            INTEGER,
     raw_text                    TEXT,
     normalized_text             TEXT,
+    clause_text                 TEXT,
     record_type                 TEXT,
     final_action                TEXT,
     symbol                      TEXT,

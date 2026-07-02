@@ -27,6 +27,7 @@ Resolution source values:
 from __future__ import annotations
 
 import hashlib
+import re
 from decimal import Decimal
 from typing import Optional
 
@@ -40,7 +41,7 @@ from src.config import (
 from src.entity_extractor import EntityExtractor, ExtractionResult
 from src.ml_classifier import MLClassifier, get_classifier
 from src.rule_parser import RuleParseResult, apply_rules
-from src.schemas import ParsedTradeEvent
+from src.schemas import ParsedMessageBundle, ParsedTradeEvent
 from src.text_normalizer import normalize
 
 
@@ -239,6 +240,136 @@ class HybridParser:
             children.append(child)
 
         return children
+
+    def parse_bundle(
+        self,
+        raw_text: str,
+        source_message_id: Optional[str] = None,
+        existing_long: bool = False,
+        existing_short: bool = False,
+        has_holdings_context: bool = False,
+        market_group: Optional[str] = None,
+        parent_metadata: Optional[dict] = None,
+    ) -> ParsedMessageBundle:
+        """
+        Parse a source message into a message-level bundle.
+
+        Existing single-clause messages are represented as a one-child bundle.
+        Ordered reversals are represented as exactly two child events.
+        """
+        normalized_parent = normalize(raw_text)
+        single = self.parse(
+            raw_text=raw_text,
+            source_message_id=source_message_id,
+            existing_long=existing_long,
+            existing_short=existing_short,
+            has_holdings_context=has_holdings_context,
+            market_group=market_group,
+        )
+
+        clauses = _split_structural_clauses(raw_text)
+        if len(clauses) <= 1:
+            single.clause_text = raw_text
+            return ParsedMessageBundle(
+                source_message_id=source_message_id,
+                raw_text=raw_text,
+                normalized_text=normalized_parent,
+                child_events=[single],
+                auto_apply_eligible=single.auto_apply_eligible,
+                needs_review=single.needs_review,
+                validation_errors=list(single.validation_errors),
+                validation_warnings=list(single.validation_warnings),
+            )
+
+        if single.is_correction or single.is_conditional:
+            return _review_bundle(
+                single,
+                source_message_id,
+                raw_text,
+                normalized_parent,
+                "ORDERED_SPLIT_AMBIGUOUS",
+            )
+
+        actionable = [clause for clause in clauses if _has_actionable_text(clause)]
+        if len(actionable) > 2:
+            return _review_bundle(
+                single,
+                source_message_id,
+                raw_text,
+                normalized_parent,
+                "ORDERED_TOO_MANY_ACTIONABLE_CLAUSES",
+            )
+        if len(actionable) != 2:
+            return _review_bundle(
+                single,
+                source_message_id,
+                raw_text,
+                normalized_parent,
+                "ORDERED_SPLIT_AMBIGUOUS",
+            )
+
+        if existing_long and existing_short:
+            return _review_bundle(
+                single,
+                source_message_id,
+                raw_text,
+                normalized_parent,
+                "ORDERED_SPLIT_AMBIGUOUS",
+            )
+
+        old_side = "LONG" if existing_long else "SHORT" if existing_short else None
+        child1 = self.parse(
+            raw_text=actionable[0],
+            source_message_id=_child_source_id(source_message_id, 1),
+            existing_long=existing_long,
+            existing_short=existing_short,
+            has_holdings_context=has_holdings_context,
+            market_group=market_group,
+        )
+        child2 = self.parse(
+            raw_text=actionable[1],
+            source_message_id=_child_source_id(source_message_id, 2),
+            existing_long=False,
+            existing_short=False,
+            has_holdings_context=has_holdings_context,
+            market_group=market_group,
+        )
+
+        _prepare_ordered_child(child1, raw_text, actionable[0], source_message_id, 1)
+        _prepare_ordered_child(child2, raw_text, actionable[1], source_message_id, 2)
+        if old_side:
+            child1.direction = old_side
+            child1.resolved_position_side = old_side
+
+        reason = _validate_ordered_children(child1, child2, old_side)
+        if reason:
+            bundle = ParsedMessageBundle(
+                source_message_id=source_message_id,
+                raw_text=raw_text,
+                normalized_text=normalized_parent,
+                is_ordered=True,
+                bundle_type="ORDERED_REVERSAL",
+                child_events=[child1, child2],
+                validation_errors=[reason],
+                auto_apply_eligible=False,
+                needs_review=True,
+            )
+            for child in bundle.child_events:
+                child.auto_apply_eligible = False
+                child.needs_review = True
+                child.validation_errors.append(reason)
+            return bundle
+
+        return ParsedMessageBundle(
+            source_message_id=source_message_id,
+            raw_text=raw_text,
+            normalized_text=normalized_parent,
+            is_ordered=True,
+            bundle_type="ORDERED_REVERSAL",
+            child_events=[child1, child2],
+            auto_apply_eligible=True,
+            needs_review=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -454,3 +585,97 @@ def _set_eligibility_flags(
     else:
         event.auto_apply_eligible = False
         event.needs_review = True
+
+
+def _child_source_id(parent_id: Optional[str], index: int) -> Optional[str]:
+    if not parent_id:
+        return None
+    return f"{parent_id}#{index}"
+
+
+def _split_structural_clauses(raw_text: str) -> list[str]:
+    text = (raw_text or "").replace("\\n", "\n")
+    parts = [part.strip() for part in re.split(r"\s*(?:&|;|\n+)\s*", text) if part.strip()]
+    return parts
+
+
+def _has_actionable_text(clause: str) -> bool:
+    return bool(re.search(
+        r"\b(BUY|SELL|FULL\s+PROFIT|BOOK\s+FULL\s+PROFIT|EXIT\s+FROM|SL\s+TOUCH(?:ED)?|STOP\s+LOSS\s+HIT|PART\s+PROFIT|PROFIT\s+BOOK)\b",
+        clause,
+        re.IGNORECASE,
+    ))
+
+
+def _prepare_ordered_child(
+    child: ParsedTradeEvent,
+    parent_raw_text: str,
+    clause_text: str,
+    parent_source_message_id: Optional[str],
+    index: int,
+) -> None:
+    child.raw_text = parent_raw_text
+    child.clause_text = clause_text
+    child.normalized_text = normalize(clause_text)
+    child.parent_source_message_id = parent_source_message_id
+    child.child_event_index = index
+    child.is_multi_instrument = False
+
+
+def _review_bundle(
+    event: ParsedTradeEvent,
+    source_message_id: Optional[str],
+    raw_text: str,
+    normalized_text: str,
+    reason: str,
+) -> ParsedMessageBundle:
+    event.needs_review = True
+    event.auto_apply_eligible = False
+    event.validation_errors.append(reason)
+    return ParsedMessageBundle(
+        source_message_id=source_message_id,
+        raw_text=raw_text,
+        normalized_text=normalized_text,
+        child_events=[event],
+        validation_errors=[reason],
+        auto_apply_eligible=False,
+        needs_review=True,
+    )
+
+
+def _same_non_direction_identity(a: ParsedTradeEvent, b: ParsedTradeEvent) -> bool:
+    return (
+        a.market_group == b.market_group
+        and a.symbol == b.symbol
+        and (a.contract_month or "") == (b.contract_month or "")
+        and (a.option_type or "") == (b.option_type or "")
+        and str(a.strike_price or "") == str(b.strike_price or "")
+    )
+
+
+def _validate_ordered_children(
+    child1: ParsedTradeEvent,
+    child2: ParsedTradeEvent,
+    old_side: Optional[str],
+) -> Optional[str]:
+    if child1.is_correction or child1.is_conditional or child2.is_correction or child2.is_conditional:
+        return "ORDERED_SPLIT_AMBIGUOUS"
+    if not child1.symbol or not child2.symbol:
+        return "ORDERED_SPLIT_AMBIGUOUS"
+    if child1.final_action != "CLOSE_POSITION":
+        return "ORDERED_CHILD_1_NOT_FULL_CLOSE"
+    if child1.surface_instruction not in {"BOOK_FULL", "SL_TOUCH", "EXIT"}:
+        return "ORDERED_CHILD_1_NOT_FULL_CLOSE"
+    if child2.final_action not in {"OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"}:
+        return "ORDERED_CHILD_2_INVALID_ENTRY"
+    if not child2.entry_capacity_pct or child2.quantity_basis != "CUSTOMER_BUYING_CAPACITY":
+        return "ORDERED_CHILD_2_INVALID_ENTRY"
+    if not _same_non_direction_identity(child1, child2):
+        return "ORDERED_CHILD_IDENTITY_MISMATCH"
+    if old_side == "LONG" and child2.resolved_position_side != "SHORT":
+        return "ORDERED_NOT_OPPOSITE_DIRECTION"
+    if old_side == "SHORT" and child2.resolved_position_side != "LONG":
+        return "ORDERED_NOT_OPPOSITE_DIRECTION"
+    if old_side is None:
+        return "ORDERED_CHILD_1_NO_POSITION"
+    return None

@@ -51,6 +51,7 @@ class ParsedTradeEvent:
     source_message_id: Optional[str] = None
     raw_text: str = ""
     normalized_text: str = ""
+    clause_text: Optional[str] = None
 
     # ---- Classification ----------------------------------------------------
     record_type: str = "UNKNOWN"           # TRADE_ACTION | TRADE_UPDATE | TRADE_CONTROL | NON_TRADE
@@ -232,3 +233,76 @@ class ReviewItem:
     created_at: Optional[str] = None
     resolved_at: Optional[str] = None
     resolution_notes: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# ParsedMessageBundle
+# ---------------------------------------------------------------------------
+@dataclass
+class ParsedMessageBundle:
+    """
+    Message-level parser output.
+
+    Single-clause messages are represented as a one-child bundle so existing
+    event-level APIs can keep working while ordered messages preserve parent
+    and child semantics explicitly.
+    """
+
+    source_message_id: Optional[str] = None
+    raw_text: str = ""
+    normalized_text: str = ""
+    is_ordered: bool = False
+    bundle_type: str = "SINGLE"
+    child_events: list[ParsedTradeEvent] = field(default_factory=list)
+    validation_errors: list[str] = field(default_factory=list)
+    validation_warnings: list[str] = field(default_factory=list)
+    auto_apply_eligible: bool = False
+    needs_review: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "source_message_id": self.source_message_id,
+            "raw_text": self.raw_text,
+            "normalized_text": self.normalized_text,
+            "is_ordered": self.is_ordered,
+            "bundle_type": self.bundle_type,
+            "child_events": [child.to_dict() for child in self.child_events],
+            "validation_errors": list(self.validation_errors),
+            "validation_warnings": list(self.validation_warnings),
+            "auto_apply_eligible": self.auto_apply_eligible,
+            "needs_review": self.needs_review,
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "ParsedMessageBundle":
+        d = json.loads(json_str)
+        if "child_events" not in d:
+            event = ParsedTradeEvent.from_json(json_str)
+            return cls(
+                source_message_id=event.source_message_id,
+                raw_text=event.raw_text,
+                normalized_text=event.normalized_text,
+                child_events=[event],
+                auto_apply_eligible=event.auto_apply_eligible,
+                needs_review=event.needs_review,
+            )
+
+        children = [
+            ParsedTradeEvent.from_json(json.dumps(child, ensure_ascii=False))
+            for child in d.get("child_events", [])
+        ]
+        return cls(
+            source_message_id=d.get("source_message_id"),
+            raw_text=d.get("raw_text", ""),
+            normalized_text=d.get("normalized_text", ""),
+            is_ordered=bool(d.get("is_ordered", False)),
+            bundle_type=d.get("bundle_type", "SINGLE"),
+            child_events=children,
+            validation_errors=list(d.get("validation_errors", [])),
+            validation_warnings=list(d.get("validation_warnings", [])),
+            auto_apply_eligible=bool(d.get("auto_apply_eligible", False)),
+            needs_review=bool(d.get("needs_review", False)),
+        )

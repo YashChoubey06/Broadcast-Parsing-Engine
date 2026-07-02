@@ -23,7 +23,7 @@ _GLOBAL_EQUITIES = {
     "AAPL", "AMD", "AMAT", "ASML", "AVGO", "CBRE", "CRDO", "CRWD", "CRWV",
     "DELL", "GEV", "HOOD", "INTU", "LLY", "LRCX", "MDB", "META", "MRVL",
     "MSFT", "MU", "NBIS", "NOW", "NVDA", "OKTA", "ORCL", "PANW", "PLTR",
-    "RKLB", "SMCI", "SNDK", "SNOW", "SOXL", "STX", "WDC", "XOM",
+    "RKLB", "SMCI", "SNDK", "SNOW", "SOXL", "STX", "TSLA", "WDC", "XOM",
 }
 _GLOBAL_INDEX_OR_MACRO = {
     "SP500", "NASDAQ", "DOW", "RUSSELL", "VIX", "DOLLAR_INDEX",

@@ -470,6 +470,7 @@ class HoldingsEngine:
             "processing_order": processing_order,
             "raw_text": event.raw_text,
             "normalized_text": event.normalized_text,
+            "clause_text": event.clause_text,
             "record_type": event.record_type,
             "final_action": event.final_action,
             "symbol": event.symbol,

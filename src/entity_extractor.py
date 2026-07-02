@@ -106,6 +106,14 @@ _ENTRY_SYMBOL_FALLBACK_RE = re.compile(
     r"\b(?:BUY|SELL)\s+\d+(?:\.\d+)?\s*%\s+([A-Z][A-Z0-9._-]{1,14})\b",
     re.IGNORECASE,
 )
+_PCT_ENTRY_SYMBOL_FALLBACK_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*%\s+(?:BUY|SELL)\s+([A-Z][A-Z0-9._-]{1,14})\b",
+    re.IGNORECASE,
+)
+_IN_SYMBOL_FALLBACK_RE = re.compile(
+    r"\b(?:IN|FROM)\s+([A-Z][A-Z0-9._-]{1,14})\b",
+    re.IGNORECASE,
+)
 _SYMBOL_FALLBACK_STOPWORDS = {
     "AT", "CMP", "ABOVE", "BELOW", "IF", "WHEN", "WITH", "SL", "STOP",
     "TGT", "TARGET", "PROFIT", "BOOK", "FULL", "PART", "EXIT", "FROM",
@@ -280,7 +288,11 @@ class EntityExtractor:
                 er.symbol = None  # ambiguous – let caller decide
 
         if not er.symbols:
-            fallback = _ENTRY_SYMBOL_FALLBACK_RE.search(upper)
+            fallback = (
+                _ENTRY_SYMBOL_FALLBACK_RE.search(upper)
+                or _PCT_ENTRY_SYMBOL_FALLBACK_RE.search(upper)
+                or _IN_SYMBOL_FALLBACK_RE.search(upper)
+            )
             if fallback:
                 candidate = fallback.group(1).strip().upper()
                 if candidate not in _SYMBOL_FALLBACK_STOPWORDS and not candidate[0].isdigit():

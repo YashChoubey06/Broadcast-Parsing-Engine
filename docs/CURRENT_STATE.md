@@ -1,6 +1,6 @@
 # Current State
 
-Last updated after Phase 2 position-identity enforcement.
+Last updated after Phase 3 ordered reversal handling.
 
 ## Git
 
@@ -19,6 +19,7 @@ Last updated after Phase 2 position-identity enforcement.
 - Audit and report scripts under `scripts/`.
 - Phase 1 v2 semantics for surface instructions, entry capacity units, current-position reductions, and opposite-side conflict handling.
 - Phase 2 full instrument identity normalisation, exact lookup, guarded fallback, duplicate auditing, and SQLite identity indexes.
+- Phase 3 atomic ordered reversal handling for explicit complete-close followed by opposite-side entry messages.
 
 ## Phase 1 Semantics
 
@@ -92,6 +93,41 @@ Phase 2 migration: `002_position_identity_indexes`.
 - Refuses to merge/delete rows or create the unique index if duplicates exist.
 - Was verified only against temporary test databases during Phase 2 implementation.
 
+Phase 3 ordered reversal storage:
+
+- Parent parser predictions store a `ParsedMessageBundle` JSON payload.
+- Child events are persisted as individual immutable event rows.
+- Child IDs are deterministic: `{parent_source_message_id}#1` and `{parent_source_message_id}#2`.
+- Each child preserves `parent_source_message_id`, `child_event_index`, and dedicated `clause_text`.
+- Shadow/verified event tables receive nullable child metadata columns when the shadow migration runs on temporary/test databases.
+- No operational database migration was run as part of Phase 3.
+
+## Phase 3 Ordered Reversals
+
+An ordered reversal is one logical operation containing exactly two actionable clauses:
+
+1. Explicit complete close of the current side.
+2. Opposite-side entry for the same full instrument identity.
+
+Supported close clauses are `FULL PROFIT BOOK`, `BOOK FULL PROFIT`, `EXIT FROM X`, `SL TOUCH IN X`, `SL TOUCHED IN X`, and `STOP LOSS HIT IN X`. `PART PROFIT` and percentage profit booking are not sufficient for an automatic reversal.
+
+Supported entry clauses are `BUY X%`, `SELL X%`, plain stock `BUY`, and plain stock `SELL`. Entry percentages remain customer-buying-capacity units, plain stock entries default to 100 units, and cumulative exposure may exceed 100.
+
+Clause splitting is deliberately conservative and uses only `&`, semicolon, actual newline, and escaped newline from source text. It does not split on hyphens, target ranges, slash-separated values, commas, decimal points, or ordinary `AND` prose. More than two actionable clauses route the parent to review.
+
+Atomicity:
+
+- Ordered children are applied through `src/ordered_event_service.py`.
+- Both children execute inside one SQLite savepoint/transaction scope.
+- If child 1 fails, child 2 is not executed.
+- If child 2 fails, child 1 is rolled back.
+- There is no Phase 3 partial-resume behavior.
+- A detected half-committed legacy/corrupt sequence routes to `PARTIAL_ORDERED_SEQUENCE_DETECTED`.
+
+Review reasons include `ORDERED_SPLIT_AMBIGUOUS`, `ORDERED_TOO_MANY_ACTIONABLE_CLAUSES`, `ORDERED_CHILD_1_NOT_FULL_CLOSE`, `ORDERED_CHILD_1_NO_POSITION`, `ORDERED_CHILD_1_AMBIGUOUS_IDENTITY`, `ORDERED_CHILD_2_INVALID_ENTRY`, `ORDERED_CHILD_IDENTITY_MISMATCH`, `ORDERED_NOT_OPPOSITE_DIRECTION`, `ORDERED_EXISTING_OPPOSITE_POSITION`, `ORDERED_CHILD_1_FAILED`, `ORDERED_CHILD_2_FAILED`, and `PARTIAL_ORDERED_SEQUENCE_DETECTED`.
+
+Simultaneous independent long and short support remains deferred. If an opposite-side position is already open, the ordered message routes to review.
+
 Portfolios are separated by `positions.portfolio_id`:
 
 - `default` or historical: replay and normal local application
@@ -159,8 +195,8 @@ Current focused verification:
 
 Full suite:
 
-- Collected: `163`
-- Passed: `163`
+- Collected: `179`
+- Passed: `179`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
@@ -209,10 +245,9 @@ Use `storage/shadow_acceptance.db` for acceptance testing.
 - Real-time feed ingestion is not implemented.
 - Production data may not begin from a verified empty portfolio.
 - Group actions are reviewed but not automatically applied.
-- Multi-clause reversal parsing and ordered reversal application remain deferred to Phase 3.
-- Raw CSV candidate recovery, dataset relabelling, model retraining, and fresh historical/shadow acceptance remain deferred.
+- Raw CSV candidate recovery, dataset relabelling, model retraining, historical replay regeneration, operational database migration, and fresh historical/shadow acceptance remain deferred to Phase 4 or later.
 - SQLite is local and single-writer oriented.
 
 ## Next Planned Task
 
-Phase 3: ordered multi-clause reversal handling, only after explicit approval.
+Phase 4 remains deferred: raw CSV recovery, relabelling, retraining, and fresh acceptance testing must not start without explicit approval.

@@ -390,6 +390,20 @@ Standalone opposite-side instructions require context. Existing `LONG` + standal
 `SELL`, or existing `SHORT` + standalone `BUY`, is routed to review unless an
 explicit close/reduction clause precedes it.
 
+Ordered reversal messages are supported when a parent message contains exactly
+two actionable clauses separated by `&`, semicolon, or a newline:
+
+```
+FULL PROFIT BOOK IN TSLA @1124 & 50% SELL TSLA @1124 SL 1200 TGT 1100-1050
+```
+
+The parser emits a parent `ParsedMessageBundle` with deterministic child IDs
+`parent#1` and `parent#2`. Child 1 must be an explicit complete close, and child
+2 must be the opposite-side entry for the same full instrument identity. Both
+children are applied atomically; if either child fails, neither position change
+is committed. Shadow application and verified approval both use this same
+all-or-nothing ordered-event service.
+
 All reduction percentages apply to the **current holding**, not the original:
 
 ```
@@ -428,8 +442,8 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 3. **No real-time feed**: The system processes messages in batch from CSV files.
 4. **Missing portfolio start**: The production dataset may not start from an empty portfolio. Reduction/close messages without a known open position go to manual review.
 5. **Group actions**: `CLOSE_GROUP` is classified and reviewed but not automatically applied.
-6. **Multi-clause reversals**: Ordered close-then-opposite-entry handling is deferred to Phase 3.
-7. **Dataset/model follow-up**: Raw CSV candidate recovery, dataset relabelling, model retraining, and fresh historical/shadow acceptance are not part of Phase 2.
+6. **Multi-clause reversals**: Only explicit complete-close then opposite-entry ordered reversals are automatic. Partial-profit reversals, more than two actionable clauses, and simultaneous independent long/short cases still require review.
+7. **Dataset/model follow-up**: Raw CSV candidate recovery, dataset relabelling, model retraining, historical replay regeneration, operational database migration, and fresh historical/shadow acceptance are not part of Phase 3.
 8. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
 
 ---
