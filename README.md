@@ -342,6 +342,31 @@ SQLite is intended here for local, limited single-writer operation. Do not treat
 the Streamlit review app plus batch tools as a high-concurrency production
 database deployment.
 
+### Position identity
+
+Every position is identified by the normalized full key:
+
+```
+portfolio_id + market_group + symbol + contract_month + option_type + strike_price + direction
+```
+
+Optional identity fields are persisted as non-null canonical strings:
+
+- `contract_month = ""`
+- `option_type = ""`
+- `strike_price = ""`
+- unresolved `market_group = "UNKNOWN"`
+
+Repository lookups perform exact full-key matching when the event supplies the
+distinguishing identity fields. Legacy or incomplete messages use guarded
+fallback: all open positions in the same portfolio for the canonical symbol are
+filtered by every supplied field, and the event may proceed only if exactly one
+candidate remains. Ambiguous matches route to review with no position change.
+
+Phase 2 migration `002_position_identity_indexes` normalizes identity columns,
+audits duplicate full keys, and creates full-key indexes only when safe. It
+never merges or deletes rows automatically.
+
 ---
 
 ## Core business rule
@@ -403,8 +428,8 @@ The holdings engine depends only on the `Protocol` interfaces in `src/repository
 3. **No real-time feed**: The system processes messages in batch from CSV files.
 4. **Missing portfolio start**: The production dataset may not start from an empty portfolio. Reduction/close messages without a known open position go to manual review.
 5. **Group actions**: `CLOSE_GROUP` is classified and reviewed but not automatically applied.
-6. **Position identity**: Full market/contract/option identity enforcement is deferred to Phase 2; current lookup behavior remains simplified.
-7. **Option contracts**: Strike/option type are extracted but position keying is simplified in this version.
+6. **Multi-clause reversals**: Ordered close-then-opposite-entry handling is deferred to Phase 3.
+7. **Dataset/model follow-up**: Raw CSV candidate recovery, dataset relabelling, model retraining, and fresh historical/shadow acceptance are not part of Phase 2.
 8. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
 
 ---

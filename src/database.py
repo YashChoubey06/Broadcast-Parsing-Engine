@@ -32,12 +32,12 @@ _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS positions (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     portfolio_id            TEXT    NOT NULL DEFAULT 'default',
-    market_group            TEXT,
+    market_group            TEXT    NOT NULL DEFAULT 'UNKNOWN',
     symbol                  TEXT    NOT NULL,
-    contract_month          TEXT,
-    option_type             TEXT,
-    strike_price            TEXT,
-    direction               TEXT,
+    contract_month          TEXT    NOT NULL DEFAULT '',
+    option_type             TEXT    NOT NULL DEFAULT '',
+    strike_price            TEXT    NOT NULL DEFAULT '',
+    direction               TEXT    NOT NULL DEFAULT '',
     current_allocation_pct  TEXT    NOT NULL DEFAULT '0',
     average_entry_price     TEXT,
     stop_loss               TEXT,
@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
 
 -- Useful indexes
 CREATE INDEX IF NOT EXISTS idx_pos_symbol ON positions(symbol, direction, status);
+CREATE INDEX IF NOT EXISTS idx_pos_full_identity ON positions(
+    portfolio_id, market_group, symbol, contract_month,
+    option_type, strike_price, direction, status
+);
 CREATE INDEX IF NOT EXISTS idx_events_symbol ON trade_events(symbol);
 CREATE INDEX IF NOT EXISTS idx_events_order ON trade_events(processing_order);
 CREATE INDEX IF NOT EXISTS idx_review_status ON manual_review_queue(review_status);

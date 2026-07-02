@@ -11,6 +11,7 @@ from src.hybrid_parser import HybridParser
 from src.validator import validate
 from src.holdings_engine import HoldingsEngine, HoldingsResult
 from src.sqlite_repository import SQLitePositionRepository
+from src.position_identity import IdentityMatchStatus
 from src.repository_interfaces import TradeEventRepository, ProcessedMessageRepository, ReviewQueueRepository, SnapshotRepository
 
 class DynamicEventRepoAdapter(TradeEventRepository):
@@ -80,21 +81,33 @@ def _copy_verified_baseline_to_shadow(conn: sqlite3.Connection, event: ParsedTra
     if event.final_action != "REDUCE_POSITION" or not event.symbol:
         return
 
-    shadow = conn.execute(
-        "SELECT 1 FROM positions WHERE portfolio_id='shadow' AND symbol=? AND status='OPEN' LIMIT 1",
-        (event.symbol,)
-    ).fetchone()
-    if shadow:
+    repo = SQLitePositionRepository(conn)
+    shadow_result = repo.resolve_position(
+        portfolio_id="shadow",
+        symbol=event.symbol,
+        direction=event.direction,
+        market_group=event.market_group,
+        contract_month=event.contract_month,
+        option_type=event.option_type,
+        strike_price=event.strike_price,
+    )
+    if shadow_result.status in {
+        IdentityMatchStatus.EXACT_MATCH,
+        IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+        IdentityMatchStatus.AMBIGUOUS_MATCH,
+    }:
         return
 
-    verified = conn.execute(
-        """
-        SELECT * FROM positions
-        WHERE portfolio_id='verified' AND symbol=? AND status='OPEN'
-        ORDER BY id DESC LIMIT 1
-        """,
-        (event.symbol,)
-    ).fetchone()
+    verified_result = repo.resolve_position(
+        portfolio_id="verified",
+        symbol=event.symbol,
+        direction=event.direction,
+        market_group=event.market_group,
+        contract_month=event.contract_month,
+        option_type=event.option_type,
+        strike_price=event.strike_price,
+    )
+    verified = verified_result.matched_position
     if not verified:
         return
 
@@ -108,10 +121,12 @@ def _copy_verified_baseline_to_shadow(conn: sqlite3.Connection, event: ParsedTra
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            "shadow", verified["market_group"], verified["symbol"], verified["contract_month"],
-            verified["option_type"], verified["strike_price"], verified["direction"],
-            verified["current_allocation_pct"], verified["average_entry_price"],
-            verified["stop_loss"], verified["targets_json"], "OPEN", now, now, verified["version"],
+            "shadow", verified.market_group, verified.symbol, verified.contract_month,
+            verified.option_type, str(verified.strike_price) if verified.strike_price else "",
+            verified.direction, str(verified.current_allocation_pct),
+            str(verified.average_entry_price) if verified.average_entry_price else None,
+            str(verified.stop_loss) if verified.stop_loss else None,
+            json.dumps([str(t) for t in verified.targets]), "OPEN", now, now, verified.version,
         )
     )
 
@@ -128,10 +143,35 @@ def ingest_message(source_message_id: str, raw_text: str, segment_name: str, db_
         existing_long = False
         existing_short = False
         if pre.symbol:
-            lp = conn.execute("SELECT * FROM positions WHERE portfolio_id='verified' AND symbol=? AND direction='LONG' ORDER BY id DESC LIMIT 1", (pre.symbol,)).fetchone()
-            sp = conn.execute("SELECT * FROM positions WHERE portfolio_id='verified' AND symbol=? AND direction='SHORT' ORDER BY id DESC LIMIT 1", (pre.symbol,)).fetchone()
-            existing_long = bool(lp and lp["status"] == "OPEN")
-            existing_short = bool(sp and sp["status"] == "OPEN")
+            repo = SQLitePositionRepository(conn)
+            long_result = repo.resolve_position(
+                portfolio_id="verified",
+                symbol=pre.symbol,
+                direction="LONG",
+                market_group=segment_name,
+                contract_month=pre.contract_month,
+                option_type=pre.option_type,
+                strike_price=pre.strike_price,
+            )
+            short_result = repo.resolve_position(
+                portfolio_id="verified",
+                symbol=pre.symbol,
+                direction="SHORT",
+                market_group=segment_name,
+                contract_month=pre.contract_month,
+                option_type=pre.option_type,
+                strike_price=pre.strike_price,
+            )
+            existing_long = long_result.status in {
+                IdentityMatchStatus.EXACT_MATCH,
+                IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+                IdentityMatchStatus.AMBIGUOUS_MATCH,
+            }
+            existing_short = short_result.status in {
+                IdentityMatchStatus.EXACT_MATCH,
+                IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+                IdentityMatchStatus.AMBIGUOUS_MATCH,
+            }
 
         event = parser.parse(
             raw_text=raw_text,

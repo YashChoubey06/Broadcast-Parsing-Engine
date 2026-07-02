@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional, Protocol, runtime_checkable
 
 from src.schemas import HoldingsResult, ParsedTradeEvent, PositionState, ReviewItem
+from src.position_identity import IdentityResolutionResult
 
 
 @runtime_checkable
@@ -33,6 +34,19 @@ class PositionRepository(Protocol):
         strike_price=None,
     ) -> Optional[PositionState]:
         """Return the current position or None if it does not exist."""
+        ...
+
+    def resolve_position(
+        self,
+        portfolio_id: str,
+        symbol: str,
+        direction: Optional[str] = None,
+        market_group: Optional[str] = None,
+        contract_month: Optional[str] = None,
+        option_type: Optional[str] = None,
+        strike_price=None,
+    ) -> IdentityResolutionResult:
+        """Return a typed exact/fallback/ambiguous identity resolution result."""
         ...
 
     def save_position(self, position: PositionState) -> PositionState:

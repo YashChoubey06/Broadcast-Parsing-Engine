@@ -44,6 +44,7 @@ from src.repository_interfaces import (
     SnapshotRepository,
     TradeEventRepository,
 )
+from src.position_identity import IdentityMatchStatus, IdentityResolutionResult
 from src.schemas import HoldingsResult, ParsedTradeEvent, PositionState, ReviewItem
 
 # Tolerance for "close enough to zero → treat as closed"
@@ -183,11 +184,31 @@ class HoldingsEngine:
         processing_order: int,
     ) -> HoldingsResult:
         symbol = event.symbol or ""
-        existing = self._get_position(event, direction)
+        same_result = self._resolve_position(event, direction)
+        if same_result.status in {
+            IdentityMatchStatus.AMBIGUOUS_MATCH,
+            IdentityMatchStatus.IDENTITY_CONFLICT,
+        }:
+            return self._send_to_review(
+                event,
+                reason=self._identity_review_reason(same_result),
+                processing_order=processing_order,
+            )
+        existing = same_result.matched_position
 
         # Opposite-direction conflict
         opposite = "SHORT" if direction == "LONG" else "LONG"
-        existing_opp = self._get_position(event, opposite)
+        opposite_result = self._resolve_position(event, opposite)
+        if opposite_result.status in {
+            IdentityMatchStatus.AMBIGUOUS_MATCH,
+            IdentityMatchStatus.IDENTITY_CONFLICT,
+        }:
+            return self._send_to_review(
+                event,
+                reason=self._identity_review_reason(opposite_result),
+                processing_order=processing_order,
+            )
+        existing_opp = opposite_result.matched_position
         if existing_opp and existing_opp.status == "OPEN":
             return self._send_to_review(
                 event,
@@ -274,8 +295,17 @@ class HoldingsEngine:
         event: ParsedTradeEvent,
         processing_order: int,
     ) -> HoldingsResult:
-        # Try to find an open position in either direction
-        existing = self._get_best_existing(event)
+        result = self._resolve_best_existing(event)
+        if result.status in {
+            IdentityMatchStatus.AMBIGUOUS_MATCH,
+            IdentityMatchStatus.IDENTITY_CONFLICT,
+        }:
+            return self._send_to_review(
+                event,
+                reason=self._identity_review_reason(result),
+                processing_order=processing_order,
+            )
+        existing = result.matched_position
 
         if not existing or existing.status != "OPEN":
             return self._send_to_review(
@@ -312,7 +342,17 @@ class HoldingsEngine:
         event: ParsedTradeEvent,
         processing_order: int,
     ) -> HoldingsResult:
-        existing = self._get_best_existing(event)
+        result = self._resolve_best_existing(event)
+        if result.status in {
+            IdentityMatchStatus.AMBIGUOUS_MATCH,
+            IdentityMatchStatus.IDENTITY_CONFLICT,
+        }:
+            return self._send_to_review(
+                event,
+                reason=self._identity_review_reason(result),
+                processing_order=processing_order,
+            )
+        existing = result.matched_position
 
         if not existing or existing.status != "OPEN":
             return self._send_to_review(
@@ -339,7 +379,17 @@ class HoldingsEngine:
         action: str,
         processing_order: int,
     ) -> HoldingsResult:
-        existing = self._get_best_existing(event)
+        result = self._resolve_best_existing(event)
+        if result.status in {
+            IdentityMatchStatus.AMBIGUOUS_MATCH,
+            IdentityMatchStatus.IDENTITY_CONFLICT,
+        }:
+            return self._send_to_review(
+                event,
+                reason=self._identity_review_reason(result),
+                processing_order=processing_order,
+            )
+        existing = result.matched_position
 
         if not existing:
             # For status events, a missing position is a warning but not fatal
@@ -480,9 +530,33 @@ class HoldingsEngine:
     def _get_position(
         self,
         event: ParsedTradeEvent,
-        direction: str,
+        direction: Optional[str],
     ) -> Optional[PositionState]:
-        return self._positions.get_position(
+        result = self._resolve_position(event, direction)
+        if result.status in {
+            IdentityMatchStatus.EXACT_MATCH,
+            IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+        }:
+            return result.matched_position
+        return None
+
+    def _resolve_position(
+        self,
+        event: ParsedTradeEvent,
+        direction: Optional[str],
+    ) -> IdentityResolutionResult:
+        if hasattr(self._positions, "resolve_position"):
+            return self._positions.resolve_position(
+                portfolio_id=self._portfolio_id,
+                symbol=event.symbol or "",
+                direction=direction,
+                market_group=event.market_group,
+                contract_month=event.contract_month,
+                option_type=event.option_type,
+                strike_price=event.strike_price,
+            )
+
+        pos = self._positions.get_position(
             portfolio_id=self._portfolio_id,
             symbol=event.symbol or "",
             direction=direction,
@@ -491,31 +565,42 @@ class HoldingsEngine:
             option_type=event.option_type,
             strike_price=event.strike_price,
         )
+        if pos:
+            return IdentityResolutionResult(
+                status=IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+                matched_position=pos,
+                candidate_count=1,
+                candidate_position_ids=[pos.position_id] if pos.position_id else [],
+                explanation="Legacy repository returned one position.",
+            )
+        return IdentityResolutionResult(
+            status=IdentityMatchStatus.NO_MATCH,
+            explanation="Legacy repository returned no position.",
+        )
 
-    def _get_best_existing(
+    def _resolve_best_existing(
         self,
         event: ParsedTradeEvent,
-    ) -> Optional[PositionState]:
+    ) -> IdentityResolutionResult:
         """
-        Return the most relevant open position for an event.
+        Return the uniquely matching open position for an event.
 
-        Tries event.direction first, then either direction.
+        Direction may be omitted; in that case all supplied identity fields are
+        applied and exactly one candidate must remain.
         """
-        if event.direction:
-            pos = self._get_position(event, event.direction)
-            if pos and pos.status == "OPEN":
-                return pos
+        return self._resolve_position(event, event.direction)
 
-        # Try LONG then SHORT
-        for d in ("LONG", "SHORT"):
-            pos = self._get_position(event, d)
-            if pos and pos.status == "OPEN":
-                return pos
-
-        # Return even if CLOSED (caller will reject)
-        if event.direction:
-            return self._get_position(event, event.direction)
-        return None
+    @staticmethod
+    def _identity_review_reason(result: IdentityResolutionResult) -> str:
+        if result.status == IdentityMatchStatus.AMBIGUOUS_MATCH:
+            return (
+                "AMBIGUOUS_POSITION_IDENTITY: multiple open positions match "
+                f"candidate_ids={result.candidate_position_ids}; "
+                f"fields_used={result.fields_used}; missing={result.fields_missing}."
+            )
+        if result.status == IdentityMatchStatus.IDENTITY_CONFLICT:
+            return f"IDENTITY_CONFLICT: {result.explanation}"
+        return f"MISSING_PRIOR_POSITION: {result.explanation}"
 
     @staticmethod
     def _clone(pos: PositionState) -> PositionState:

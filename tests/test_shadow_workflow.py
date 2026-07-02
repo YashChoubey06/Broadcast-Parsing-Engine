@@ -17,12 +17,16 @@ from src.shadow_service import (
 )
 from src.export_verified_training_data import export_labels
 from src.import_verified_positions import import_positions
+from src.schemas import PositionState
+from src.sqlite_repository import SQLitePositionRepository
 from scripts.migrate_shadow_tables import apply_migration
 
-TEST_DB_PATH = Path("storage/test_shadow_workflow.db")
+TEST_DB_PATH = None
 
 @pytest.fixture(scope="function", autouse=True)
-def setup_test_db():
+def setup_test_db(tmp_path):
+    global TEST_DB_PATH
+    TEST_DB_PATH = tmp_path / "test_shadow_workflow.db"
     # Clean setup
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
@@ -221,6 +225,45 @@ def test_shadow_standalone_sell_against_verified_long_is_blocked(tmp_path):
     assert verified["current_allocation_pct"] == "100"
     assert shadow_long is None
     assert shadow_short is None
+
+def test_shadow_and_verified_resolution_use_same_identity_resolver():
+    with closing(get_connection(TEST_DB_PATH)) as conn:
+        repo = SQLitePositionRepository(conn)
+        repo.save_position(PositionState(
+            portfolio_id="verified",
+            market_group="GLOBAL_EQUITY",
+            symbol="AAPL",
+            direction="LONG",
+            current_allocation_pct=Decimal("100"),
+            status="OPEN",
+        ))
+        repo.save_position(PositionState(
+            portfolio_id="verified",
+            market_group="GLOBAL_EQUITY",
+            symbol="AAPL",
+            contract_month="2026-08",
+            option_type="CALL",
+            strike_price=Decimal("450"),
+            direction="LONG",
+            current_allocation_pct=Decimal("100"),
+            status="OPEN",
+        ))
+        conn.commit()
+
+    res = ingest_message("ambiguous-aapl", "PART PROFIT BOOK IN AAPL", "International Market", TEST_DB_PATH)
+    assert res["status"] == "PENDING_REVIEW"
+
+    app_res = approve_as_parsed("ambiguous-aapl", "R", TEST_DB_PATH)
+    assert app_res["status"] == "ERROR"
+    assert "AMBIGUOUS_POSITION_IDENTITY" in app_res["message"]
+
+    with closing(get_connection(TEST_DB_PATH)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE portfolio_id='shadow' AND symbol='AAPL'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE portfolio_id='verified' AND symbol='AAPL' AND current_allocation_pct='100'"
+        ).fetchone()[0] == 2
 
 def test_rejected_and_needs_context_reviews_export_as_training_candidates(tmp_path):
     ingest_message("reject-export", "BUY 50% AMD @160", "Equity", TEST_DB_PATH)

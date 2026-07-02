@@ -14,6 +14,8 @@ from contextlib import closing
 
 from src.database import get_connection, transaction
 from src.config import DATABASE_PATH
+from src.position_identity import IdentityMatchStatus, canonicalize_position
+from src.sqlite_repository import SQLitePositionRepository
 from src.schemas import PositionState
 
 def _parse_row(row: dict) -> PositionState:
@@ -53,13 +55,23 @@ def import_positions(input_path: Path, db_path: Path = DATABASE_PATH, dry_run: b
             reader = csv.DictReader(f)
             for i, row in enumerate(reader):
                 pos = _parse_row(row)
+                pos = canonicalize_position(pos)
 
-                cur = conn.execute("""
-                    SELECT id FROM positions
-                    WHERE portfolio_id = 'verified' AND symbol = ? AND direction = ? AND status = 'OPEN'
-                """, (pos.symbol, pos.direction))
-
-                if cur.fetchone():
+                repo = SQLitePositionRepository(conn)
+                existing = repo.resolve_position(
+                    portfolio_id="verified",
+                    symbol=pos.symbol,
+                    direction=pos.direction,
+                    market_group=pos.market_group,
+                    contract_month=pos.contract_month,
+                    option_type=pos.option_type,
+                    strike_price=pos.strike_price,
+                )
+                if existing.status in {
+                    IdentityMatchStatus.EXACT_MATCH,
+                    IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+                    IdentityMatchStatus.AMBIGUOUS_MATCH,
+                }:
                     print(f"Row {i+1}: OVERWRITE PREVENTED. Existing open {pos.direction} position found for {pos.symbol}.")
                     continue
 
@@ -84,7 +96,8 @@ def import_positions(input_path: Path, db_path: Path = DATABASE_PATH, dry_run: b
                             status, opened_at, updated_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        p.portfolio_id, p.market_group, p.symbol, p.contract_month, p.option_type, p.strike_price,
+                        p.portfolio_id, p.market_group, p.symbol, p.contract_month, p.option_type,
+                        str(p.strike_price) if p.strike_price else "",
                         p.direction, p.current_allocation_pct, p.average_entry_price, p.stop_loss, json.dumps(p.targets),
                         p.status, p.opened_at, p.updated_at
                     ))

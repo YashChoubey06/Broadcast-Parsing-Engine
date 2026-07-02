@@ -1,6 +1,6 @@
 # Current State
 
-Last updated after Phase 1 v2 trade-semantics implementation.
+Last updated after Phase 2 position-identity enforcement.
 
 ## Git
 
@@ -18,6 +18,7 @@ Last updated after Phase 1 v2 trade-semantics implementation.
 - Shadow ingestion CLIs, verified-position import, verified-label export, and shadow metrics.
 - Audit and report scripts under `scripts/`.
 - Phase 1 v2 semantics for surface instructions, entry capacity units, current-position reductions, and opposite-side conflict handling.
+- Phase 2 full instrument identity normalisation, exact lookup, guarded fallback, duplicate auditing, and SQLite identity indexes.
 
 ## Phase 1 Semantics
 
@@ -60,6 +61,18 @@ Base tables:
 - `manual_review_queue`
 - `position_snapshots`
 
+Position identity is the normalized full key:
+
+- `portfolio_id`
+- `market_group`
+- `symbol`
+- `contract_month`
+- `option_type`
+- `strike_price`
+- `direction`
+
+Optional identity fields are persisted as canonical non-null strings: blank contract month, option type, and strike for non-derivatives; `UNKNOWN` for unresolved market group. SQLite lookups use exact full identity when supplied. Incomplete legacy messages use guarded fallback only when filtering open positions by every supplied identity field leaves exactly one candidate. Multiple candidates route to review with `AMBIGUOUS_POSITION_IDENTITY`; no position is changed.
+
 Shadow migration: `001_shadow_testing_tables`.
 
 Shadow tables:
@@ -71,6 +84,13 @@ Shadow tables:
 - `shadow_events`
 - `verified_events`
 - `verified_labels`
+
+Phase 2 migration: `002_position_identity_indexes`.
+
+- Normalizes position identity fields in the target database before indexing.
+- Audits duplicate normalized full keys before creating the unique full-key index.
+- Refuses to merge/delete rows or create the unique index if duplicates exist.
+- Was verified only against temporary test databases during Phase 2 implementation.
 
 Portfolios are separated by `positions.portfolio_id`:
 
@@ -130,16 +150,17 @@ Command:
 .\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short
 ```
 
-Current Phase 1 focused verification:
+Current focused verification:
 
-- Parser tests: `78 passed`
+- Identity tests: `14 passed`
+- SQLite repository tests: `9 passed`
 - Holdings-engine tests: `18 passed`
-- Shadow-workflow tests: `15 passed`, `6 warnings`
+- Shadow-workflow tests: `16 passed`, `6 warnings`
 
 Full suite:
 
-- Collected: `148`
-- Passed: `148`
+- Collected: `163`
+- Passed: `163`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
@@ -188,10 +209,10 @@ Use `storage/shadow_acceptance.db` for acceptance testing.
 - Real-time feed ingestion is not implemented.
 - Production data may not begin from a verified empty portfolio.
 - Group actions are reviewed but not automatically applied.
-- Position identity remains a known Phase 2 limitation: repository lookups still primarily use portfolio, symbol, and direction; full market/contract/option identity enforcement is not implemented yet.
-- Option-contract keying remains simplified until Phase 2.
+- Multi-clause reversal parsing and ordered reversal application remain deferred to Phase 3.
+- Raw CSV candidate recovery, dataset relabelling, model retraining, and fresh historical/shadow acceptance remain deferred.
 - SQLite is local and single-writer oriented.
 
 ## Next Planned Task
 
-Phase 2: enforce full instrument position identity and guarded unique-candidate fallback.
+Phase 3: ordered multi-clause reversal handling, only after explicit approval.

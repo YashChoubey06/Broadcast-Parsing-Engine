@@ -27,6 +27,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+from src.position_identity import (
+    IdentityResolutionResult,
+    IdentityMatchStatus,
+    canonicalize_position,
+    identity_from_values,
+    resolve_from_candidates,
+)
 from src.schemas import PositionState, ReviewItem
 
 
@@ -55,10 +62,10 @@ def _row_to_position(row: sqlite3.Row) -> PositionState:
     return PositionState(
         position_id=row["id"],
         portfolio_id=row["portfolio_id"],
-        market_group=row["market_group"],
+        market_group=row["market_group"] or "UNKNOWN",
         symbol=row["symbol"],
-        contract_month=row["contract_month"],
-        option_type=row["option_type"],
+        contract_month=row["contract_month"] or "",
+        option_type=row["option_type"] or "",
         strike_price=_d(row["strike_price"]),
         direction=row["direction"],
         current_allocation_pct=Decimal(str(row["current_allocation_pct"] or "0")),
@@ -91,22 +98,72 @@ class SQLitePositionRepository:
         option_type: Optional[str] = None,
         strike_price=None,
     ) -> Optional[PositionState]:
-        params: list = [portfolio_id, symbol]
+        result = self.resolve_position(
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            direction=direction,
+            market_group=market_group,
+            contract_month=contract_month,
+            option_type=option_type,
+            strike_price=strike_price,
+        )
+        if result.status in {
+            IdentityMatchStatus.EXACT_MATCH,
+            IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+        }:
+            return result.matched_position
+        return None
+
+    def resolve_position(
+        self,
+        portfolio_id: str,
+        symbol: str,
+        direction: Optional[str] = None,
+        market_group: Optional[str] = None,
+        contract_month: Optional[str] = None,
+        option_type: Optional[str] = None,
+        strike_price=None,
+    ) -> IdentityResolutionResult:
+        identity = identity_from_values(
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            direction=direction,
+            market_group=market_group,
+            contract_month=contract_month,
+            option_type=option_type,
+            strike_price=strike_price,
+        )
+        if not identity.symbol:
+            return IdentityResolutionResult(
+                status=IdentityMatchStatus.NO_MATCH,
+                explanation="No canonical symbol supplied.",
+                fields_used=["portfolio_id"],
+                fields_missing=["symbol"],
+            )
+
         sql = """
             SELECT * FROM positions
-            WHERE portfolio_id = ? AND symbol = ?
+            WHERE portfolio_id = ? AND symbol = ? AND status = 'OPEN'
+            ORDER BY id
         """
-        if direction:
-            sql += " AND direction = ?"
-            params.append(direction)
-        sql += " ORDER BY id DESC LIMIT 1"
+        rows = self._conn.execute(sql, [identity.portfolio_id, identity.symbol]).fetchall()
+        candidates = [_row_to_position(r) for r in rows]
+        return resolve_from_candidates(identity, candidates)
 
-        row = self._conn.execute(sql, params).fetchone()
-        if row is None:
-            return None
-        return _row_to_position(row)
+    def list_open_candidates(self, portfolio_id: str, symbol: str) -> list[PositionState]:
+        identity = identity_from_values(portfolio_id=portfolio_id, symbol=symbol)
+        rows = self._conn.execute(
+            """
+            SELECT * FROM positions
+            WHERE portfolio_id=? AND symbol=? AND status='OPEN'
+            ORDER BY id
+            """,
+            (identity.portfolio_id, identity.symbol),
+        ).fetchall()
+        return [_row_to_position(r) for r in rows]
 
     def save_position(self, position: PositionState) -> PositionState:
+        position = canonicalize_position(position)
         targets_json = json.dumps([str(t) for t in position.targets])
         if position.position_id is None:
             # Insert new position
@@ -125,7 +182,7 @@ class SQLitePositionRepository:
                     position.symbol,
                     position.contract_month,
                     position.option_type,
-                    str(position.strike_price) if position.strike_price else None,
+                    str(position.strike_price) if position.strike_price else "",
                     position.direction,
                     str(position.current_allocation_pct),
                     str(position.average_entry_price) if position.average_entry_price else None,
@@ -154,7 +211,7 @@ class SQLitePositionRepository:
                     position.symbol,
                     position.contract_month,
                     position.option_type,
-                    str(position.strike_price) if position.strike_price else None,
+                    str(position.strike_price) if position.strike_price else "",
                     position.direction,
                     str(position.current_allocation_pct),
                     str(position.average_entry_price) if position.average_entry_price else None,
