@@ -300,6 +300,42 @@ No Phase 4 candidate is a trusted label. The scan does not reconstruct
 holdings context, does not apply events, does not relabel datasets, does not
 retrain the model, does not migrate databases, and does not start Phase 5.
 
+### Phase 4 candidate human review
+
+Review decisions are stored separately from immutable scanner output:
+
+| File | Contents |
+|------|----------|
+| `data/review/phase4_reversal_candidates.csv` | Immutable scanner output; do not edit or overwrite |
+| `data/review/phase4_reversal_review_decisions.csv` | Human decisions keyed by `candidate_id` |
+| `data/review/phase4_reversal_candidates_reviewed.csv` | Regenerated merge of scanner output plus decisions |
+
+Start the local review app:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/phase4_candidate_review_app.py
+```
+
+Generate review-progress reports:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.phase4_review_summary
+```
+
+The generated reports are:
+
+| File | Contents |
+|------|----------|
+| `reports/phase4_human_review_summary.json` | Counts, progress percentage, and candidate IDs only |
+| `reports/phase4_human_review_status_counts.csv` | Count by review status |
+| `reports/phase4_human_review_training_eligibility.csv` | Training-eligible candidate IDs and statuses |
+| `reports/phase4_human_review_progress.csv` | One-row progress summary |
+
+Only `CONFIRMED_ORDERED_REVERSAL` is currently training-compatible. False
+positives, ambiguous messages, gibberish, needs-context records, and
+do-not-use records cannot be marked training eligible. Phase 5 remains blocked
+until candidate review is complete and explicitly approved.
+
 ---
 
 ## Run tests

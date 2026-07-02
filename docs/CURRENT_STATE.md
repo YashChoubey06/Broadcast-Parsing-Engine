@@ -169,6 +169,53 @@ Every generated candidate starts with:
 
 No Phase 4 candidate is a trusted label. Holdings context is not reconstructed during the raw scan, so context validation is explicitly marked as not run. The scanner records structural parser evidence and Phase 3 bundle-parser comparison fields for human review.
 
+## Phase 4 Candidate Human Review
+
+The local human-review workflow is implemented without modifying scanner output.
+
+Immutable scanner output:
+
+- `data/review/phase4_reversal_candidates.csv`
+
+Mutable local review decisions:
+
+- `data/review/phase4_reversal_review_decisions.csv`
+
+Regenerated merged export:
+
+- `data/review/phase4_reversal_candidates_reviewed.csv`
+
+Review decisions are keyed by `candidate_id`, written with a lock file and
+atomic replacement, and include reviewer, reviewed timestamp, status,
+training-eligibility flag, review notes, corrected fields, and
+`changed_fields_json`. The original scanner candidate fields and parser output
+remain unchanged; corrections are stored separately.
+
+Start the review app:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/phase4_candidate_review_app.py
+```
+
+Generate review summaries:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.phase4_review_summary
+```
+
+Generated local reports:
+
+- `reports/phase4_human_review_summary.json`
+- `reports/phase4_human_review_status_counts.csv`
+- `reports/phase4_human_review_training_eligibility.csv`
+- `reports/phase4_human_review_progress.csv`
+
+Only `CONFIRMED_ORDERED_REVERSAL` is currently training-compatible. False
+positives, ambiguous or needs-context records, gibberish, and do-not-use records
+cannot be marked `use_for_training=true`. Phase 5 relabelling and model
+retraining remain blocked until human review is complete and explicitly
+approved.
+
 ## Model
 
 - Local project interpreter: `C:\Astrodunia text parsing\trade_message_system\.venv\Scripts\python.exe`
@@ -226,10 +273,10 @@ Current focused verification:
 - Holdings-engine tests: `18 passed`
 - Shadow-workflow tests: `16 passed`, `6 warnings`
 
-Full suite:
+Full suite after Phase 4 human-review workflow:
 
-- Collected: `197`
-- Passed: `197`
+- Collected: `208`
+- Passed: `208`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
@@ -240,6 +287,10 @@ Phase 4 focused tests:
 
 - `18 passed`
 - `6` NumPy/joblib deprecation warnings during model unpickling
+
+Phase 4 human-review workflow focused tests:
+
+- `11 passed`
 
 ## Commands
 
