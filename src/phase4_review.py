@@ -25,6 +25,7 @@ TRAINING_ELIGIBILITY_CSV = REPORTS_DIR / "phase4_human_review_training_eligibili
 PROGRESS_CSV = REPORTS_DIR / "phase4_human_review_progress.csv"
 
 PENDING_REVIEW = "PENDING_REVIEW"
+CONFIRMED_ORDERED_CLOSE_THEN_ENTRY = "CONFIRMED_ORDERED_CLOSE_THEN_ENTRY"
 CONFIRMED_ORDERED_REVERSAL = "CONFIRMED_ORDERED_REVERSAL"
 CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY = "CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY"
 FALSE_POSITIVE = "FALSE_POSITIVE"
@@ -32,8 +33,18 @@ NEEDS_MORE_CONTEXT = "NEEDS_MORE_CONTEXT"
 DO_NOT_USE_FOR_TRAINING = "DO_NOT_USE_FOR_TRAINING"
 REJECTED_GIBBERISH = "REJECTED_GIBBERISH"
 
+ORDERED_CLOSE_THEN_ENTRY = "ORDERED_CLOSE_THEN_ENTRY"
+
+NOT_EVALUATED = "NOT_EVALUATED"
+REVERSAL = "REVERSAL"
+SAME_SIDE_REENTRY = "SAME_SIDE_REENTRY"
+NO_OPEN_POSITION = "NO_OPEN_POSITION"
+AMBIGUOUS_POSITION = "AMBIGUOUS_POSITION"
+IDENTITY_CONFLICT = "IDENTITY_CONFLICT"
+
 REVIEW_STATUSES = [
     PENDING_REVIEW,
+    CONFIRMED_ORDERED_CLOSE_THEN_ENTRY,
     CONFIRMED_ORDERED_REVERSAL,
     CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY,
     FALSE_POSITIVE,
@@ -42,15 +53,34 @@ REVIEW_STATUSES = [
     REJECTED_GIBBERISH,
 ]
 
-TRAINING_COMPATIBLE_STATUSES = {CONFIRMED_ORDERED_REVERSAL}
+PORTFOLIO_EFFECT_STATUSES = [
+    NOT_EVALUATED,
+    REVERSAL,
+    SAME_SIDE_REENTRY,
+    NO_OPEN_POSITION,
+    AMBIGUOUS_POSITION,
+    IDENTITY_CONFLICT,
+]
+
+STRUCTURE_TRAINING_COMPATIBLE_STATUSES = {
+    CONFIRMED_ORDERED_CLOSE_THEN_ENTRY,
+    CONFIRMED_ORDERED_REVERSAL,
+}
+PORTFOLIO_TRAINING_COMPATIBLE_EFFECTS = {REVERSAL, SAME_SIDE_REENTRY}
 
 DECISION_FIELDS = [
     "candidate_id",
     "review_status",
     "use_for_training",
+    "use_for_structure_training",
+    "use_for_portfolio_effect_training",
+    "portfolio_effect_status",
+    "review_bundle_type",
     "reviewer",
     "review_notes",
     "reviewed_at",
+    "previous_review_status",
+    "decision_revision",
     "corrected_candidate_kind",
     "corrected_clause_1_text",
     "corrected_clause_2_text",
@@ -76,15 +106,24 @@ DEFAULT_DECISION.update(
     {
         "review_status": PENDING_REVIEW,
         "use_for_training": "false",
+        "use_for_structure_training": "false",
+        "use_for_portfolio_effect_training": "false",
+        "portfolio_effect_status": NOT_EVALUATED,
+        "review_bundle_type": "",
+        "decision_revision": "0",
     }
 )
 
 REVIEW_GUIDANCE = {
+    CONFIRMED_ORDERED_CLOSE_THEN_ENTRY: [
+        "clause 1 fully closes the current database position",
+        "clause 2 opens a new BUY or SELL position",
+        "same non-direction instrument identity",
+        "actual reversal versus same-side re-entry is determined later from database position state",
+    ],
     CONFIRMED_ORDERED_REVERSAL: [
-        "clause 1 fully closes the existing position",
-        "clause 2 opens the opposite position",
-        "both clauses concern the same instrument identity",
-        "clause ordering is clear",
+        "deprecated legacy status retained for existing decisions",
+        "use CONFIRMED_ORDERED_CLOSE_THEN_ENTRY for new text-level reviews",
     ],
     CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY: [
         "message contains valid multiple trade instructions",
@@ -94,7 +133,10 @@ REVIEW_GUIDANCE = {
         "separator does not separate actionable trade instructions",
     ],
     NEEDS_MORE_CONTEXT: [
-        "message may be valid but cannot be confidently interpreted from its text alone",
+        "missing or ambiguous symbol",
+        "conflicting contract month, market, stock/future identity, option strike, or option type",
+        "unclear clause boundary",
+        "references such as previous call without enough text",
     ],
     DO_NOT_USE_FOR_TRAINING: [
         "valid operational record but unsuitable as a clear training example",
@@ -195,6 +237,15 @@ def load_decisions(decisions_csv: Path = DECISIONS_CSV) -> list[dict]:
         base = DEFAULT_DECISION.copy()
         base.update({field: row.get(field, "") for field in DECISION_FIELDS})
         base["use_for_training"] = _bool_text(base["use_for_training"])
+        if "use_for_structure_training" not in row or row.get("use_for_structure_training", "") == "":
+            base["use_for_structure_training"] = base["use_for_training"]
+        else:
+            base["use_for_structure_training"] = _bool_text(base["use_for_structure_training"])
+        base["use_for_portfolio_effect_training"] = _bool_text(base["use_for_portfolio_effect_training"])
+        if base["portfolio_effect_status"] not in PORTFOLIO_EFFECT_STATUSES:
+            base["portfolio_effect_status"] = NOT_EVALUATED
+        if not base["decision_revision"]:
+            base["decision_revision"] = "1" if base.get("reviewed_at") else "0"
         normalized.append(base)
     return normalized
 
@@ -207,7 +258,9 @@ def _validate_decision(
     *,
     candidate_id: str,
     review_status: str,
-    use_for_training: bool | str,
+    use_for_structure_training: bool | str,
+    use_for_portfolio_effect_training: bool | str,
+    portfolio_effect_status: str,
     reviewer: str,
     valid_candidate_ids: set[str],
 ) -> None:
@@ -215,10 +268,51 @@ def _validate_decision(
         raise Phase4ReviewError(f"Unknown Phase 4 candidate_id: {candidate_id}")
     if review_status not in REVIEW_STATUSES:
         raise Phase4ReviewError(f"Unsupported review_status: {review_status}")
+    if portfolio_effect_status not in PORTFOLIO_EFFECT_STATUSES:
+        raise Phase4ReviewError(f"Unsupported portfolio_effect_status: {portfolio_effect_status}")
     if not reviewer.strip():
         raise Phase4ReviewError("Reviewer is required before saving a Phase 4 decision.")
-    if _bool_text(use_for_training) == "true" and review_status not in TRAINING_COMPATIBLE_STATUSES:
-        raise Phase4ReviewError(f"{review_status} cannot be marked use_for_training=true")
+    if (
+        _bool_text(use_for_structure_training) == "true"
+        and review_status not in STRUCTURE_TRAINING_COMPATIBLE_STATUSES
+    ):
+        raise Phase4ReviewError(f"{review_status} cannot be marked use_for_structure_training=true")
+    if (
+        _bool_text(use_for_portfolio_effect_training) == "true"
+        and portfolio_effect_status not in PORTFOLIO_TRAINING_COMPATIBLE_EFFECTS
+    ):
+        raise Phase4ReviewError(
+            f"{portfolio_effect_status} cannot be marked use_for_portfolio_effect_training=true"
+        )
+
+
+def ordered_close_then_entry_status(candidate: dict) -> str:
+    child_1_effect = candidate.get("child_1_position_effect", "")
+    child_2_effect = candidate.get("child_2_position_effect", "")
+    same_identity = candidate.get("same_instrument_identity", "").lower()
+    child_2_instruction = candidate.get("child_2_surface_instruction", "")
+    child_count = candidate.get("phase3_child_count", "")
+    full_close = child_1_effect == "CLOSE"
+    explicit_entry = child_2_effect in {"OPEN", "ADD"} or child_2_instruction in {"BUY", "SELL"}
+    if child_count == "2" and full_close and explicit_entry and same_identity == "true":
+        return CONFIRMED_ORDERED_CLOSE_THEN_ENTRY
+    return NEEDS_MORE_CONTEXT
+
+
+def resolve_portfolio_effect(previous_position_side: Optional[str], entry_instruction: str) -> str:
+    if previous_position_side is None or previous_position_side == "":
+        return NOT_EVALUATED
+    previous = previous_position_side.upper()
+    entry = entry_instruction.upper()
+    if previous in {"NONE", "NO_OPEN_POSITION"}:
+        return NO_OPEN_POSITION
+    if previous in {"BOTH", "AMBIGUOUS"}:
+        return AMBIGUOUS_POSITION
+    if previous not in {"LONG", "SHORT"} or entry not in {"BUY", "SELL"}:
+        return IDENTITY_CONFLICT
+    if (previous == "LONG" and entry == "SELL") or (previous == "SHORT" and entry == "BUY"):
+        return REVERSAL
+    return SAME_SIDE_REENTRY
 
 
 def _changed_fields(candidate: dict, corrected_fields: dict) -> dict:
@@ -236,7 +330,11 @@ def save_decision(
     candidate_id: str,
     *,
     review_status: str,
-    use_for_training: bool | str = False,
+    use_for_training: bool | str | None = None,
+    use_for_structure_training: bool | str | None = None,
+    use_for_portfolio_effect_training: bool | str = False,
+    portfolio_effect_status: str = NOT_EVALUATED,
+    review_bundle_type: Optional[str] = None,
     reviewer: str,
     review_notes: str = "",
     corrected_fields: Optional[dict] = None,
@@ -247,13 +345,20 @@ def save_decision(
 ) -> dict:
     candidates = load_candidates(candidate_csv)
     by_candidate_id = {row["candidate_id"]: row for row in candidates}
+    legacy_training_value = _bool_text(use_for_training)
+    if use_for_structure_training is None:
+        use_for_structure_training = legacy_training_value
     _validate_decision(
         candidate_id=candidate_id,
         review_status=review_status,
-        use_for_training=use_for_training,
+        use_for_structure_training=use_for_structure_training,
+        use_for_portfolio_effect_training=use_for_portfolio_effect_training,
+        portfolio_effect_status=portfolio_effect_status,
         reviewer=reviewer,
         valid_candidate_ids=set(by_candidate_id),
     )
+    if review_bundle_type is None:
+        review_bundle_type = ORDERED_CLOSE_THEN_ENTRY if review_status == CONFIRMED_ORDERED_CLOSE_THEN_ENTRY else ""
 
     corrected_fields = corrected_fields or {}
     normalized_corrected = {field: str(corrected_fields.get(field, "") or "") for field in CORRECTED_FIELDS}
@@ -267,22 +372,33 @@ def save_decision(
     else:
         json.loads(changed_fields_json or "{}")
 
-    saved = DEFAULT_DECISION.copy()
-    saved.update(normalized_corrected)
-    saved.update(
-        {
-            "candidate_id": candidate_id,
-            "review_status": review_status,
-            "use_for_training": _bool_text(use_for_training),
-            "reviewer": reviewer.strip(),
-            "review_notes": review_notes or "",
-            "reviewed_at": _utc_now(),
-            "changed_fields_json": changed_fields_json or "{}",
-        }
-    )
-
     with _file_lock(decisions_csv):
         rows_by_id = {row["candidate_id"]: row for row in load_decisions(decisions_csv) if row.get("candidate_id")}
+        existing = rows_by_id.get(candidate_id, DEFAULT_DECISION.copy())
+        previous_review_status = existing.get("review_status", PENDING_REVIEW)
+        try:
+            decision_revision = str(int(existing.get("decision_revision") or "0") + 1)
+        except ValueError:
+            decision_revision = "1"
+        saved = DEFAULT_DECISION.copy()
+        saved.update(normalized_corrected)
+        saved.update(
+            {
+                "candidate_id": candidate_id,
+                "review_status": review_status,
+                "use_for_training": _bool_text(use_for_structure_training),
+                "use_for_structure_training": _bool_text(use_for_structure_training),
+                "use_for_portfolio_effect_training": _bool_text(use_for_portfolio_effect_training),
+                "portfolio_effect_status": portfolio_effect_status,
+                "review_bundle_type": review_bundle_type,
+                "reviewer": reviewer.strip(),
+                "review_notes": review_notes or "",
+                "reviewed_at": _utc_now(),
+                "previous_review_status": previous_review_status,
+                "decision_revision": decision_revision,
+                "changed_fields_json": changed_fields_json or "{}",
+            }
+        )
         rows_by_id[candidate_id] = saved
         rows = [rows_by_id[key] for key in sorted(rows_by_id)]
         _write_csv_atomic(decisions_csv, rows, DECISION_FIELDS)
@@ -386,6 +502,10 @@ def attach_decisions(candidates: list[dict], decisions: list[dict]) -> list[dict
             row[f"decision_{field}" if field in candidate else field] = decision.get(field, "")
         row["current_review_status"] = decision["review_status"]
         row["current_use_for_training"] = decision["use_for_training"]
+        row["current_use_for_structure_training"] = decision["use_for_structure_training"]
+        row["current_use_for_portfolio_effect_training"] = decision["use_for_portfolio_effect_training"]
+        row["current_portfolio_effect_status"] = decision["portfolio_effect_status"]
+        row["current_review_bundle_type"] = decision["review_bundle_type"]
         row["is_reviewed"] = str(decision["review_status"] != PENDING_REVIEW).lower()
         rows.append(row)
     return rows
@@ -402,6 +522,9 @@ def filter_candidates(
     candidate_scope: str = "ALL",
     source_segment: str = "ALL",
     use_for_training: str = "ALL",
+    use_for_structure_training: str = "ALL",
+    use_for_portfolio_effect_training: str = "ALL",
+    portfolio_effect_status: str = "ALL",
     reviewed: str = "ALL",
 ) -> list[dict]:
     def keep(row: dict) -> bool:
@@ -423,6 +546,18 @@ def filter_candidates(
             return False
         if use_for_training != "ALL" and row.get("current_use_for_training", "").lower() != use_for_training.lower():
             return False
+        if (
+            use_for_structure_training != "ALL"
+            and row.get("current_use_for_structure_training", "").lower() != use_for_structure_training.lower()
+        ):
+            return False
+        if (
+            use_for_portfolio_effect_training != "ALL"
+            and row.get("current_use_for_portfolio_effect_training", "").lower() != use_for_portfolio_effect_training.lower()
+        ):
+            return False
+        if portfolio_effect_status != "ALL" and row.get("current_portfolio_effect_status") != portfolio_effect_status:
+            return False
         if reviewed == "REVIEWED" and row.get("is_reviewed") != "true":
             return False
         if reviewed == "UNREVIEWED" and row.get("is_reviewed") != "false":
@@ -443,23 +578,55 @@ def progress_summary(
     def count(status: str) -> int:
         return sum(1 for row in rows if row["review_status"] == status)
 
-    training_ids = [row["candidate_id"] for row in rows if row["use_for_training"] == "true"]
+    structure_training_ids = [row["candidate_id"] for row in rows if row["use_for_structure_training"] == "true"]
+    portfolio_training_ids = [
+        row["candidate_id"]
+        for row in rows
+        if row["use_for_portfolio_effect_training"] == "true"
+        and row["portfolio_effect_status"] != NOT_EVALUATED
+    ]
     return {
         "total_candidates": total,
         "reviewed_candidates": len(reviewed_rows),
         "pending_candidates": count(PENDING_REVIEW),
-        "confirmed_reversals": count(CONFIRMED_ORDERED_REVERSAL),
+        "confirmed_ordered_close_then_entry": count(CONFIRMED_ORDERED_CLOSE_THEN_ENTRY),
+        "legacy_confirmed_ordered_reversals": count(CONFIRMED_ORDERED_REVERSAL),
         "confirmed_other_multi_clause": count(CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY),
         "false_positives": count(FALSE_POSITIVE),
         "needs_context": count(NEEDS_MORE_CONTEXT),
         "rejected_gibberish": count(REJECTED_GIBBERISH),
         "do_not_use_records": count(DO_NOT_USE_FOR_TRAINING),
-        "training_eligible_records": len(training_ids),
+        "structure_training_eligible_records": len(structure_training_ids),
+        "portfolio_effect_training_eligible_records": len(portfolio_training_ids),
+        "training_eligible_records": len(structure_training_ids),
         "progress_percentage": round((len(reviewed_rows) / total * 100), 2) if total else 0.0,
-        "training_eligible_candidate_ids": training_ids,
+        "structure_training_eligible_candidate_ids": structure_training_ids,
+        "portfolio_effect_training_eligible_candidate_ids": portfolio_training_ids,
+        "training_eligible_candidate_ids": structure_training_ids,
         "reviewed_candidate_ids": [row["candidate_id"] for row in reviewed_rows],
         "pending_candidate_ids": [row["candidate_id"] for row in rows if row["review_status"] == PENDING_REVIEW],
     }
+
+
+def portfolio_metrics_denominator(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if row.get("portfolio_effect_status") != NOT_EVALUATED]
+
+
+def audit_existing_decisions(
+    *,
+    decisions_csv: Path = DECISIONS_CSV,
+    statuses: tuple[str, ...] = (CONFIRMED_ORDERED_REVERSAL, NEEDS_MORE_CONTEXT),
+) -> list[dict]:
+    return [
+        {
+            "candidate_id": row["candidate_id"],
+            "review_status": row["review_status"],
+            "portfolio_effect_status": row.get("portfolio_effect_status", NOT_EVALUATED),
+            "decision_revision": row.get("decision_revision", ""),
+        }
+        for row in load_decisions(decisions_csv)
+        if row.get("review_status") in statuses
+    ]
 
 
 def write_review_reports(paths: ReviewPaths = ReviewPaths()) -> dict:
@@ -489,12 +656,21 @@ def write_review_reports(paths: ReviewPaths = ReviewPaths()) -> dict:
             {
                 "candidate_id": row["candidate_id"],
                 "review_status": row["review_status"],
-                "use_for_training": row["use_for_training"],
+                "use_for_structure_training": row["use_for_structure_training"],
+                "use_for_portfolio_effect_training": row["use_for_portfolio_effect_training"],
+                "portfolio_effect_status": row["portfolio_effect_status"],
             }
             for row in rows
-            if row["use_for_training"] == "true"
+            if row["use_for_structure_training"] == "true"
+            or row["use_for_portfolio_effect_training"] == "true"
         ],
-        ["candidate_id", "review_status", "use_for_training"],
+        [
+            "candidate_id",
+            "review_status",
+            "use_for_structure_training",
+            "use_for_portfolio_effect_training",
+            "portfolio_effect_status",
+        ],
     )
     _write_csv_atomic(
         paths.reports_dir / PROGRESS_CSV.name,
@@ -503,12 +679,15 @@ def write_review_reports(paths: ReviewPaths = ReviewPaths()) -> dict:
             "total_candidates",
             "reviewed_candidates",
             "pending_candidates",
-            "confirmed_reversals",
+            "confirmed_ordered_close_then_entry",
+            "legacy_confirmed_ordered_reversals",
             "confirmed_other_multi_clause",
             "false_positives",
             "needs_context",
             "rejected_gibberish",
             "do_not_use_records",
+            "structure_training_eligible_records",
+            "portfolio_effect_training_eligible_records",
             "training_eligible_records",
             "progress_percentage",
         ],

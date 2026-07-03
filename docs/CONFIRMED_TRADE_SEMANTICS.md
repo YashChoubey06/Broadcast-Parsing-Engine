@@ -13,7 +13,9 @@ These rules supersede earlier assumptions in the parser, training labels, and ac
 - `Entry instruction`: `BUY`, `SELL`, `BUY X%`, `SELL X%`, same-side repeated entries, and stock entries with no explicit percentage.
 - `Reduction instruction`: `PART PROFIT`, `X% PROFIT BOOK`, and equivalent profit-book language.
 - `Close instruction`: `FULL PROFIT BOOK`, `EXIT FROM X`, `SL TOUCH IN X`, and `STOP LOSS HIT`.
-- `Reversal`: an ordered pair of clauses in a single message where the first clause closes/reduces the current side and the second opens the opposite side.
+- `ORDERED_CLOSE_THEN_ENTRY`: an ordered pair of clauses in a single message where the first clause fully closes the current database position and the second opens a new `BUY` or `SELL` entry for the same non-direction instrument identity.
+- `Reversal`: the portfolio-context outcome when `ORDERED_CLOSE_THEN_ENTRY` closes a prior `LONG` then opens `SELL`, or closes a prior `SHORT` then opens `BUY`.
+- `SAME_SIDE_REENTRY`: the portfolio-context outcome when `ORDERED_CLOSE_THEN_ENTRY` closes a prior `LONG` then opens `BUY`, or closes a prior `SHORT` then opens `SELL`.
 - `NEEDS_CONTEXT / OPPOSITE_DIRECTION_CONFLICT`: the safe state for standalone opposite-side entries against an existing position.
 
 ## Entry Versus Reduction Percentage Semantics
@@ -60,7 +62,8 @@ The system does not use `BUY X LOT` or `SELL X LOT` as sizing. Supported sizing 
 | Existing `LONG` | `PART PROFIT` | Reduce current long | `LONG = LONG * 0.75` |
 | Existing `LONG` | `X% PROFIT BOOK` | Reduce current long | `LONG = LONG * (1 - X/100)` |
 | Existing `LONG` | `FULL PROFIT BOOK`, `EXIT`, `SL TOUCH`, `STOP LOSS HIT` | Close current long | Close `LONG` to zero |
-| Existing `LONG` | close long clause then `SELL X%` clause | Reversal | Child 1 closes `LONG`; child 2 opens `SHORT X` only after child 1 succeeds |
+| Existing `LONG` | close clause then `SELL X%` clause | Ordered close then entry, portfolio outcome `REVERSAL` | Child 1 closes `LONG`; child 2 opens `SHORT X` only after child 1 succeeds |
+| Existing `LONG` | close clause then `BUY X%` clause | Ordered close then entry, portfolio outcome `SAME_SIDE_REENTRY` | Child 1 closes `LONG`; child 2 opens `LONG X` only after child 1 succeeds |
 | Existing `SHORT` | `SELL X%` | Same-side add | Add `X` capacity units to `SHORT` |
 | Existing `SHORT` | `SELL` stock with no % | Same-side full add | Add `100` capacity units to `SHORT` |
 | Existing `SHORT` | `BUY X%` standalone | Opposite-side entry without explicit close | `NEEDS_CONTEXT` / `OPPOSITE_DIRECTION_CONFLICT` |
@@ -68,7 +71,8 @@ The system does not use `BUY X LOT` or `SELL X LOT` as sizing. Supported sizing 
 | Existing `SHORT` | `PART PROFIT` | Reduce current short | `SHORT = SHORT * 0.75` |
 | Existing `SHORT` | `X% PROFIT BOOK` | Reduce current short | `SHORT = SHORT * (1 - X/100)` |
 | Existing `SHORT` | `FULL PROFIT BOOK`, `EXIT`, `SL TOUCH`, `STOP LOSS HIT` | Close current short | Close `SHORT` to zero |
-| Existing `SHORT` | close short clause then `BUY X%` clause | Reversal | Child 1 closes `SHORT`; child 2 opens `LONG X` only after child 1 succeeds |
+| Existing `SHORT` | close clause then `BUY X%` clause | Ordered close then entry, portfolio outcome `REVERSAL` | Child 1 closes `SHORT`; child 2 opens `LONG X` only after child 1 succeeds |
+| Existing `SHORT` | close clause then `SELL X%` clause | Ordered close then entry, portfolio outcome `SAME_SIDE_REENTRY` | Child 1 closes `SHORT`; child 2 opens `SHORT X` only after child 1 succeeds |
 | Existing `LONG` and `SHORT` same instrument | Any new instruction | Rare unsupported simultaneous sides | Route to `NEEDS_CONTEXT` initially |
 
 ## Repeated Entries Above 100
@@ -122,9 +126,9 @@ SL TOUCH IN X -> 0
 STOP LOSS HIT IN X -> 0
 ```
 
-## Reversal Sequencing
+## Ordered Close-Then-Entry Sequencing
 
-Reversals may be expressed as two ordered clauses in one source message.
+Ordered close-then-entry sequences may be expressed as two ordered clauses in one source message.
 
 Example:
 
@@ -134,14 +138,36 @@ FULL PROFIT BOOK IN X @1124
 50% SELL X @1124 SL 1200 TGT 1100-1050
 ```
 
-Required ordered effects:
+Text-level requirements:
+
+1. Child event 1 is an explicit full-close instruction, such as `FULL PROFIT BOOK`, `EXIT`, `SL TOUCH`, or `STOP LOSS HIT`.
+2. Child event 2 is an explicit `BUY` or `SELL` entry.
+3. Both clauses refer to the same full non-direction instrument identity.
+4. Clause ordering is clear.
+
+The close clause normally does not state `LONG` or `SHORT`. It means close the
+currently open database position for that exact instrument identity. Therefore,
+the text parser can confirm `ORDERED_CLOSE_THEN_ENTRY`, but cannot classify the
+portfolio outcome as `REVERSAL` or `SAME_SIDE_REENTRY` without trustworthy
+database position context.
+
+Runtime ordered effects:
 
 1. Child event 1 closes the existing `LONG X`.
 2. Child event 2 opens `SHORT X` with 50 customer-capacity units.
 3. Child event 2 must run only after child event 1 succeeds.
 4. The original parent message ID, timestamp, and source text must be preserved.
 
-The inverse applies when closing a `SHORT` and opening a `LONG`.
+The database position determines the final portfolio outcome:
+
+- previous `LONG` + new `SELL` = `REVERSAL`
+- previous `SHORT` + new `BUY` = `REVERSAL`
+- previous `LONG` + new `BUY` = `SAME_SIDE_REENTRY`
+- previous `SHORT` + new `SELL` = `SAME_SIDE_REENTRY`
+
+For raw Phase 4 historical text-only review, `portfolio_effect_status` defaults
+to `NOT_EVALUATED` unless a trustworthy historical database snapshot is
+explicitly available. Do not infer `REVERSAL` from text alone.
 
 ## Ambiguous And Untrusted Cases
 
@@ -187,7 +213,7 @@ Start: LONG 100 INFY
 SELL INFY @1600 SL 1650 TGT 1500 -> NEEDS_CONTEXT / OPPOSITE_DIRECTION_CONFLICT
 ```
 
-Valid reversal:
+Valid ordered close-then-entry:
 
 ```text
 Start: LONG 100 INFY
@@ -195,3 +221,7 @@ FULL PROFIT BOOK IN INFY @1600 & SELL INFY @1600 SL 1650 TGT 1500
 child 1 -> close LONG INFY
 child 2 -> open SHORT INFY 100
 ```
+
+The example above has portfolio outcome `REVERSAL` only because the prior
+database position is known to be `LONG`. With prior `SHORT` and a following
+`SELL`, the same text-level structure would be a valid `SAME_SIDE_REENTRY`.

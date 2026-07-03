@@ -187,9 +187,69 @@ Regenerated merged export:
 
 Review decisions are keyed by `candidate_id`, written with a lock file and
 atomic replacement, and include reviewer, reviewed timestamp, status,
-training-eligibility flag, review notes, corrected fields, and
-`changed_fields_json`. The original scanner candidate fields and parser output
-remain unchanged; corrections are stored separately.
+review-layer bundle type, previous status, decision revision, review notes,
+corrected fields, and `changed_fields_json`. The original scanner candidate
+fields and parser output remain unchanged; corrections are stored separately.
+Saving a decision is an upsert by `candidate_id`; repeated saves and Streamlit
+reruns do not duplicate decision rows. `Clear Decision` removes the decision row
+and returns the candidate to `PENDING_REVIEW`.
+
+Authoritative text-level review status:
+
+- `CONFIRMED_ORDERED_CLOSE_THEN_ENTRY`
+
+Authoritative review-layer bundle type:
+
+- `ORDERED_CLOSE_THEN_ENTRY`
+
+This means:
+
+- clause 1 fully closes the current database position
+- clause 2 opens a new `BUY` or `SELL` entry
+- both clauses concern the same full non-direction instrument identity
+- clause order is clear
+
+The old `CONFIRMED_ORDERED_REVERSAL` status remains readable for backward
+compatibility and is marked deprecated in the UI. Existing decisions are not
+silently rewritten.
+
+Portfolio-context outcome is stored separately:
+
+- `portfolio_effect_status = NOT_EVALUATED`
+- `REVERSAL`
+- `SAME_SIDE_REENTRY`
+- `NO_OPEN_POSITION`
+- `AMBIGUOUS_POSITION`
+- `IDENTITY_CONFLICT`
+
+Raw Phase 4 historical candidate review defaults to `NOT_EVALUATED` unless a
+trustworthy historical database snapshot is explicitly available. Do not infer
+`REVERSAL` from text alone.
+
+Training flags are split:
+
+- `use_for_structure_training`: text split, full-close clause, new entry clause,
+  non-direction identity, and parsed labels are reliable.
+- `use_for_portfolio_effect_training`: prior database position side is known
+  from trustworthy context and the outcome is labelled `REVERSAL` or
+  `SAME_SIDE_REENTRY`.
+- legacy `use_for_training`: readable for backward compatibility and mapped to
+  structure training when old rows do not contain the new fields; it does not
+  mean portfolio-effect training.
+
+Evaluation metrics must also be split:
+
+- Text-structure metrics: ordered close-then-entry detection precision/recall/F1,
+  clause split accuracy, full-close instruction accuracy, `BUY/SELL` entry
+  accuracy, full non-direction identity accuracy, entry percentage accuracy, and
+  price/stop-loss/target extraction accuracy.
+- Portfolio-context metrics: `REVERSAL` accuracy, `SAME_SIDE_REENTRY` accuracy,
+  `NO_OPEN_POSITION` handling, `AMBIGUOUS_POSITION` handling, exact position
+  identity resolution, and atomic sequence success/rollback.
+
+Candidates with `portfolio_effect_status = NOT_EVALUATED` are excluded from
+portfolio-effect metric denominators. `ORDERED_CHILD_1_NO_POSITION` from the
+offline scanner does not count as a text-structure parsing error.
 
 Start the review app:
 
@@ -210,9 +270,8 @@ Generated local reports:
 - `reports/phase4_human_review_training_eligibility.csv`
 - `reports/phase4_human_review_progress.csv`
 
-Only `CONFIRMED_ORDERED_REVERSAL` is currently training-compatible. False
-positives, ambiguous or needs-context records, gibberish, and do-not-use records
-cannot be marked `use_for_training=true`. Phase 5 relabelling and model
+False positives, ambiguous or needs-context records, gibberish, and do-not-use
+records cannot be marked training eligible. Phase 5 relabelling and model
 retraining remain blocked until human review is complete and explicitly
 approved.
 
@@ -273,10 +332,10 @@ Current focused verification:
 - Holdings-engine tests: `18 passed`
 - Shadow-workflow tests: `16 passed`, `6 warnings`
 
-Full suite after Phase 4 human-review workflow:
+Full suite after Phase 4 human-review workflow semantics correction:
 
-- Collected: `208`
-- Passed: `208`
+- Collected: `215`
+- Passed: `215`
 - Failed: `0`
 - Skipped: `0`
 - Warnings: `6`
@@ -290,7 +349,7 @@ Phase 4 focused tests:
 
 Phase 4 human-review workflow focused tests:
 
-- `11 passed`
+- `18 passed`
 
 ## Commands
 

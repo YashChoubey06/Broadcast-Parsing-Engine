@@ -20,6 +20,7 @@ data/verified_initial_positions_current.csv
 data/verified_shadow_labels.csv
 data/review/*.csv
 data/review/*.json
+data/review/backups/
 
 # Local operational SQLite databases
 storage/shadow_manual*.db

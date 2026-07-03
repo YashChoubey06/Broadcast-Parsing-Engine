@@ -331,8 +331,30 @@ The generated reports are:
 | `reports/phase4_human_review_training_eligibility.csv` | Training-eligible candidate IDs and statuses |
 | `reports/phase4_human_review_progress.csv` | One-row progress summary |
 
-Only `CONFIRMED_ORDERED_REVERSAL` is currently training-compatible. False
-positives, ambiguous messages, gibberish, needs-context records, and
+The authoritative text-level confirmation status is
+`CONFIRMED_ORDERED_CLOSE_THEN_ENTRY`: clause 1 fully closes the current database
+position, clause 2 opens a new `BUY` or `SELL` entry, the clauses share the same
+non-direction instrument identity, and ordering is clear. The review-layer
+bundle type is `ORDERED_CLOSE_THEN_ENTRY`. The runtime portfolio outcome is
+separate and stored in `portfolio_effect_status`:
+`NOT_EVALUATED`, `REVERSAL`, `SAME_SIDE_REENTRY`, `NO_OPEN_POSITION`,
+`AMBIGUOUS_POSITION`, or `IDENTITY_CONFLICT`.
+
+For raw historical Phase 4 text-only review, `portfolio_effect_status` defaults
+to `NOT_EVALUATED`. Do not infer `REVERSAL` from text alone; previous
+`LONG/SHORT` database state is required to distinguish reversals from same-side
+re-entries. Legacy `CONFIRMED_ORDERED_REVERSAL` decisions remain readable but
+are deprecated in the UI and are not silently rewritten.
+
+Training flags are split:
+
+| Field | Meaning |
+|------|---------|
+| `use_for_structure_training` | Text split, close clause, entry clause, identity, and parsed labels are reliable |
+| `use_for_portfolio_effect_training` | Trustworthy prior position context labels `REVERSAL` or `SAME_SIDE_REENTRY` |
+| `use_for_training` | Legacy readable field; maps to structure training for backward compatibility, not portfolio-effect training |
+
+False positives, ambiguous messages, gibberish, needs-context records, and
 do-not-use records cannot be marked training eligible. Phase 5 remains blocked
 until candidate review is complete and explicitly approved.
 
@@ -454,8 +476,8 @@ Standalone opposite-side instructions require context. Existing `LONG` + standal
 `SELL`, or existing `SHORT` + standalone `BUY`, is routed to review unless an
 explicit close/reduction clause precedes it.
 
-Ordered reversal messages are supported when a parent message contains exactly
-two actionable clauses separated by `&`, semicolon, or a newline:
+Ordered close-then-entry messages are supported when a parent message contains
+exactly two actionable clauses separated by `&`, semicolon, or a newline:
 
 ```
 FULL PROFIT BOOK IN TSLA @1124 & 50% SELL TSLA @1124 SL 1200 TGT 1100-1050
@@ -463,10 +485,12 @@ FULL PROFIT BOOK IN TSLA @1124 & 50% SELL TSLA @1124 SL 1200 TGT 1100-1050
 
 The parser emits a parent `ParsedMessageBundle` with deterministic child IDs
 `parent#1` and `parent#2`. Child 1 must be an explicit complete close, and child
-2 must be the opposite-side entry for the same full instrument identity. Both
-children are applied atomically; if either child fails, neither position change
-is committed. Shadow application and verified approval both use this same
-all-or-nothing ordered-event service.
+2 must be a `BUY` or `SELL` entry for the same full non-direction instrument
+identity. Both children are applied atomically; if either child fails, neither
+position change is committed. Shadow application and verified approval both use
+this same all-or-nothing ordered-event service. The prior database position side
+determines whether the portfolio outcome is `REVERSAL` or
+`SAME_SIDE_REENTRY`; raw text alone is not enough.
 
 All reduction percentages apply to the **current holding**, not the original:
 
