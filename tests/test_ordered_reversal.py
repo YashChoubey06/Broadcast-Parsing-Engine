@@ -115,6 +115,66 @@ def test_target_range_and_and_prose_are_not_split():
     assert not and_bundle.is_ordered
 
 
+def test_prose_close_then_entry_and_split_when_entry_action_is_clear():
+    crude = parse_bundle(
+        "Exit from crude and sell @ 84.20 with SL 86.00 for target 80.50-78.00",
+        existing_long=False,
+    )
+    dow = parse_bundle(
+        "Exit from short position in Dow and buy @ 52600 with S/L 51800 for target 53400",
+        existing_long=False,
+        existing_short=True,
+    )
+
+    assert crude.is_ordered
+    assert crude.child_events[0].clause_text == "Exit from crude"
+    assert crude.child_events[1].clause_text == "sell @ 84.20 with SL 86.00 for target 80.50-78.00"
+    assert crude.child_events[1].symbol == "CRUDE"
+    assert crude.child_events[1].direction == "SHORT"
+    assert crude.child_events[1].entry_capacity_pct is None
+    assert crude.child_events[1].stop_loss == Decimal("86.00")
+    assert crude.child_events[1].targets == [Decimal("80.50"), Decimal("78.00")]
+
+    assert dow.is_ordered
+    assert dow.child_events[0].clause_text == "Exit from short position in Dow"
+    assert dow.child_events[1].clause_text == "buy @ 52600 with S/L 51800 for target 53400"
+    assert dow.child_events[1].symbol == "DOW"
+    assert dow.child_events[1].direction == "LONG"
+    assert dow.child_events[1].entry_capacity_pct is None
+    assert dow.child_events[1].stop_loss == Decimal("51800")
+    assert dow.child_events[1].targets == [Decimal("53400")]
+
+
+def test_ordered_entry_inherits_identity_from_immediate_close_clause_only():
+    bundle = parse_bundle(
+        "Book profit in gold jun @4575 & sell with sl 4622 for target 4505-4482",
+        existing_long=False,
+    )
+
+    assert bundle.is_ordered
+    assert bundle.child_events[0].symbol == "GOLD"
+    assert bundle.child_events[0].contract_month == "JUN"
+    assert bundle.child_events[1].symbol == "GOLD"
+    assert bundle.child_events[1].contract_month == "JUN"
+    assert bundle.child_events[1].direction == "SHORT"
+    assert bundle.child_events[1].entry_capacity_pct is None
+    assert bundle.child_events[1].stop_loss == Decimal("4622")
+    assert bundle.child_events[1].targets == [Decimal("4505"), Decimal("4482")]
+
+
+def test_ampersand_price_level_continuation_stays_in_entry_clause():
+    bundle = parse_bundle(
+        "FULL PROFIT BOOK IN HDFCBANK @785 & BUY HDFCBANK JUNE @777 & 755 SL 740 TGT 800-850"
+    )
+
+    assert bundle.is_ordered
+    assert len(bundle.child_events) == 2
+    assert bundle.child_events[1].clause_text == "BUY HDFCBANK JUNE @777 & 755 SL 740 TGT 800-850"
+    assert bundle.child_events[1].execution_prices == [Decimal("777")]
+    assert bundle.child_events[1].stop_loss == Decimal("740")
+    assert bundle.child_events[1].targets == [Decimal("800"), Decimal("850")]
+
+
 def test_too_many_actionable_clauses_goes_to_review():
     bundle = parse_bundle("EXIT FROM TSLA & SELL 50% TSLA & BUY 50% TSLA")
 
@@ -274,6 +334,7 @@ def test_reprocessing_successful_parent_creates_no_duplicates_and_partial_detect
     assert service.apply_bundle(bundle).status == "ALREADY_PROCESSED"
     assert conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0] == 2
+    conn.close()
 
     conn = make_conn()
     save_position(conn, portfolio_id="default", market_group="GLOBAL_EQUITY")
@@ -283,6 +344,7 @@ def test_reprocessing_successful_parent_creates_no_duplicates_and_partial_detect
         (bundle.child_events[0].source_message_id, "APPLIED"),
     )
     assert make_service(conn).apply_bundle(bundle).review_reason == "PARTIAL_ORDERED_SEQUENCE_DETECTED"
+    conn.close()
 
 
 def test_shadow_and_verified_ordered_workflow(tmp_path):

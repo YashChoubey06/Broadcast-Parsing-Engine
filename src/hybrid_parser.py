@@ -337,6 +337,7 @@ class HybridParser:
 
         _prepare_ordered_child(child1, raw_text, actionable[0], source_message_id, 1)
         _prepare_ordered_child(child2, raw_text, actionable[1], source_message_id, 2)
+        _inherit_ordered_entry_identity(child1, child2)
         if old_side:
             child1.direction = old_side
             child1.resolved_position_side = old_side
@@ -487,7 +488,13 @@ def _apply_defaults(event: ParsedTradeEvent) -> None:
     # Default allocation for entry/add when no percentage was extracted
     if action in ("OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"):
         if event.quantity_percent is None:
-            event.quantity_percent = Decimal(DEFAULT_ENTRY_ALLOCATION_PCT)
+            if _should_default_entry_capacity(event):
+                event.quantity_percent = Decimal(DEFAULT_ENTRY_ALLOCATION_PCT)
+            else:
+                event.needs_review = True
+                event.validation_warnings.append(
+                    "Entry capacity missing; cannot default non-stock international entry."
+                )
         event.quantity_basis = "CUSTOMER_BUYING_CAPACITY"
         event.entry_capacity_pct = event.quantity_percent
         event.position_effect = event.position_effect or "OPEN"
@@ -532,6 +539,10 @@ def _derive_record_type(event: ParsedTradeEvent) -> str:
     if action == "AMBIGUOUS":
         return "TRADE_CONTROL"
     return "TRADE_ACTION"
+
+
+def _should_default_entry_capacity(event: ParsedTradeEvent) -> bool:
+    return event.market_group != "International Market"
 
 
 def _set_eligibility_flags(
@@ -595,16 +606,53 @@ def _child_source_id(parent_id: Optional[str], index: int) -> Optional[str]:
 
 def _split_structural_clauses(raw_text: str) -> list[str]:
     text = (raw_text or "").replace("\\n", "\n")
-    parts = [part.strip() for part in re.split(r"\s*(?:&|;|\n+)\s*", text) if part.strip()]
+    raw_parts = [
+        part.strip()
+        for part in re.split(r"\s*(?:&|;|\n+)\s*", text)
+        if part.strip()
+    ]
+    structural_parts: list[str] = []
+    for part in raw_parts:
+        if structural_parts and not _has_actionable_text(part):
+            structural_parts[-1] = f"{structural_parts[-1]} & {part}"
+        else:
+            structural_parts.append(part)
+
+    parts: list[str] = []
+    for part in structural_parts:
+        parts.extend(_split_close_then_entry_prose(part))
     return parts
+
+
+def _split_close_then_entry_prose(text: str) -> list[str]:
+    if not _has_full_close_text(text):
+        return [text]
+    for match in re.finditer(r"\s+and\s+(?=(?:\d+(?:\.\d+)?\s*%\s*)?(?:BUY|SELL)\b)", text, re.IGNORECASE):
+        left = text[:match.start()].strip()
+        right = text[match.end():].strip()
+        if left and right and _has_full_close_text(left) and _has_entry_action_text(right):
+            return [left, right]
+    return [text]
 
 
 def _has_actionable_text(clause: str) -> bool:
     return bool(re.search(
-        r"\b(BUY|SELL|FULL\s+PROFIT|BOOK\s+FULL\s+PROFIT|EXIT\s+FROM|SL\s+TOUCH(?:ED)?|STOP\s+LOSS\s+HIT|PART\s+PROFIT|PROFIT\s+BOOK)\b",
+        r"\b(BUY|SELL|FULL\s+PROFIT|BOOK\s+FULL\s+PROFIT|BOOK\s+PROFIT|EXIT\s+FROM|SL\s+TOUCH(?:ED)?|STOP\s+LOSS\s+HIT|PART\s+PROFIT|PROFIT\s+BOOK)\b",
         clause,
         re.IGNORECASE,
     ))
+
+
+def _has_full_close_text(clause: str) -> bool:
+    return bool(re.search(
+        r"\b(FULL\s+PROFIT(?:\s+BOOK)?|BOOK\s+FULL\s+PROFIT|BOOK\s+PROFIT|EXIT(?:\s+FROM)?|SL\s+TOUCH(?:ED)?|STOP\s+LOSS\s+HIT)\b",
+        clause,
+        re.IGNORECASE,
+    ))
+
+
+def _has_entry_action_text(clause: str) -> bool:
+    return bool(re.search(r"\b(?:BUY|SELL)\b", clause, re.IGNORECASE))
 
 
 def _prepare_ordered_child(
@@ -620,6 +668,25 @@ def _prepare_ordered_child(
     child.parent_source_message_id = parent_source_message_id
     child.child_event_index = index
     child.is_multi_instrument = False
+
+
+def _inherit_ordered_entry_identity(child1: ParsedTradeEvent, child2: ParsedTradeEvent) -> None:
+    if child1.final_action != "CLOSE_POSITION":
+        return
+    if child2.surface_instruction not in {"BUY", "SELL"}:
+        return
+    if child2.symbol:
+        return
+    if not child1.symbol:
+        return
+
+    child2.symbol = child1.symbol
+    child2.symbol_raw = child1.symbol_raw or child1.symbol
+    child2.symbols = [child1.symbol]
+    child2.market_group = child2.market_group or child1.market_group
+    child2.contract_month = child2.contract_month or child1.contract_month
+    child2.option_type = child2.option_type or child1.option_type
+    child2.strike_price = child2.strike_price or child1.strike_price
 
 
 def _review_bundle(
