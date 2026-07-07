@@ -204,8 +204,13 @@ def test_child_1_failure_and_missing_prior_position_change_nothing():
 
     assert result.status == "MANUAL_REVIEW"
     assert result.review_reason == "ORDERED_CHILD_1_NO_POSITION"
+    assert result.failed_child_index is None
+    assert result.child_results is None
     assert SQLitePositionRepository(conn).list_all_positions("default") == []
     assert conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM processed_messages").fetchone()[0] == 0
+    review_row = conn.execute("SELECT review_reason FROM manual_review_queue").fetchone()
+    assert review_row["review_reason"] == "ORDERED_CHILD_1_NO_POSITION"
 
 
 class FailingSecondEventRepo(SQLiteTradeEventRepository):

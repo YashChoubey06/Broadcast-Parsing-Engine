@@ -121,6 +121,9 @@ Atomicity:
 - Ordered children are applied through `src/ordered_event_service.py`.
 - Both children execute inside one SQLite savepoint/transaction scope.
 - If child 1 fails, child 2 is not executed.
+- If child 1 cannot find a matching open position, the parent routes to review
+  with `ORDERED_CHILD_1_NO_POSITION`; the new entry is not opened and holdings
+  remain unchanged.
 - If child 2 fails, child 1 is rolled back.
 - There is no Phase 3 partial-resume behavior.
 - A detected half-committed legacy/corrupt sequence routes to `PARTIAL_ORDERED_SEQUENCE_DETECTED`.
@@ -275,6 +278,54 @@ records cannot be marked training eligible. Phase 5 relabelling and model
 retraining remain blocked until human review is complete and explicitly
 approved.
 
+## Phase 5 Reviewed Label Export And Parser Evaluation
+
+Phase 5 adds an audit-first reviewed label exporter and parser baseline
+evaluation. It reads:
+
+- `data/review/phase4_reversal_candidates.csv`
+- `data/review/phase4_reversal_review_decisions.csv`
+- `data/review/phase4_reversal_candidates_reviewed.csv`
+
+The candidate CSV remains immutable, and review decisions remain separate. The
+Phase 5 audit fails closed if review completion, status counts, training flags,
+reviewer metadata, decision IDs, or corrected-field requirements differ from
+the expected completed Phase 4 baseline.
+
+Current Phase 5 audit baseline:
+
+- total candidates: `153`
+- reviewed candidates: `153`
+- pending candidates: `0`
+- `CONFIRMED_ORDERED_CLOSE_THEN_ENTRY`: `13`
+- `CONFIRMED_MULTI_CLAUSE_REVIEW_ONLY`: `86`
+- `FALSE_POSITIVE`: `50`
+- `NEEDS_MORE_CONTEXT`: `3`
+- `DO_NOT_USE_FOR_TRAINING`: `1`
+- `REJECTED_GIBBERISH`: `0`
+- structure-training eligible records: `13`
+- portfolio-effect training eligible records: `0`
+- deprecated `CONFIRMED_ORDERED_REVERSAL`: `0`
+- inconsistent flags: `0`
+
+Generated local outputs:
+
+- `data/derived/phase5_ordered_close_then_entry_labels.csv`
+- `data/derived/phase5_ordered_close_then_entry_labels.jsonl`
+- `reports/phase5_review_audit.json`
+- `reports/phase5_training_export_summary.json`
+- `reports/phase5_parser_baseline_evaluation.json`
+- `reports/phase5_parser_baseline_failures.csv`
+
+The label CSV and JSONL contain proprietary message text and are ignored by
+Git through `data/derived/`. Phase 5 does not retrain, fine-tune, overwrite the
+production model, regenerate historical replay, run shadow acceptance, migrate
+operational databases, or start Phase 6.
+
+Portfolio-effect training is skipped because no reviewed candidates are
+eligible for it. Do not infer `REVERSAL` or `SAME_SIDE_REENTRY` from text alone.
+Phase 6 remains a later acceptance-testing phase after export and evaluation.
+
 ## Model
 
 - Local project interpreter: `C:\Astrodunia text parsing\trade_message_system\.venv\Scripts\python.exe`
@@ -322,7 +373,7 @@ End-to-end shadow acceptance testing has not started yet.
 Command:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short
+.\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short --basetemp .pytest_tmp_full
 ```
 
 Current focused verification:
@@ -332,15 +383,17 @@ Current focused verification:
 - Holdings-engine tests: `18 passed`
 - Shadow-workflow tests: `16 passed`, `6 warnings`
 
-Full suite after Phase 4 human-review workflow semantics correction:
+Full suite after Phase 5 reviewed-label export and parser evaluation:
 
-- Collected: `215`
-- Passed: `215`
+- Collected: `228`
+- Passed: `228`
 - Failed: `0`
 - Skipped: `0`
-- Warnings: `6`
+- Warnings: `7`
 
-Warnings are NumPy/joblib deprecation warnings during model unpickling, not scikit-learn version mismatch warnings.
+Warnings are NumPy/joblib deprecation warnings during model unpickling plus a
+pytest cache warning from the locked local `.pytest_cache`, not scikit-learn
+version mismatch warnings.
 
 Phase 4 focused tests:
 
@@ -350,6 +403,14 @@ Phase 4 focused tests:
 Phase 4 human-review workflow focused tests:
 
 - `18 passed`
+
+Phase 5 focused tests:
+
+- `13 passed`
+
+Ordered missing-position regression:
+
+- `1 passed`
 
 ## Commands
 
@@ -398,4 +459,7 @@ Use `storage/shadow_acceptance.db` for acceptance testing.
 
 ## Next Planned Task
 
-Human review of Phase 4 candidates remains pending. Dataset relabelling, model retraining, historical replay regeneration, operational database migration, shadow acceptance testing, and Phase 5 remain blocked until human review is complete and explicitly approved.
+Review the Phase 5 parser baseline evaluation failures, if any, and decide
+whether to approve deterministic parser fixes. Model retraining, historical
+replay regeneration, operational database migration, shadow acceptance testing,
+and Phase 6 remain out of scope until explicitly approved.

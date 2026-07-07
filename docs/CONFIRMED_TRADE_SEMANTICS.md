@@ -158,6 +158,11 @@ Runtime ordered effects:
 3. Child event 2 must run only after child event 1 succeeds.
 4. The original parent message ID, timestamp, and source text must be preserved.
 
+If no matching open database position exists for child event 1, the complete
+ordered sequence is blocked and routed to review. The system must not skip the
+failed close and execute the new `BUY` or `SELL` entry. Holdings remain
+unchanged.
+
 The database position determines the final portfolio outcome:
 
 - previous `LONG` + new `SELL` = `REVERSAL`

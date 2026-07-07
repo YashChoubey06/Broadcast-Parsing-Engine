@@ -358,6 +358,37 @@ False positives, ambiguous messages, gibberish, needs-context records, and
 do-not-use records cannot be marked training eligible. Phase 5 remains blocked
 until candidate review is complete and explicitly approved.
 
+### Phase 5 reviewed label export and parser evaluation
+
+Phase 5 exports reviewed text-structure labels from the completed Phase 4 human
+decisions and evaluates the current parser against them. It does not retrain,
+fine-tune, overwrite the production model, regenerate historical replay, run
+shadow acceptance, migrate operational databases, or start Phase 6.
+
+```powershell
+.\.venv\Scripts\python.exe -m src.phase5_training_export
+```
+
+Local generated outputs:
+
+| File | Contents |
+|------|----------|
+| `data/derived/phase5_ordered_close_then_entry_labels.csv` | Reviewed structure-training labels with proprietary raw text |
+| `data/derived/phase5_ordered_close_then_entry_labels.jsonl` | JSONL copy of the reviewed labels |
+| `reports/phase5_review_audit.json` | Review completion, flag, and consistency audit |
+| `reports/phase5_training_export_summary.json` | Export counts, excluded status counts, and source hashes |
+| `reports/phase5_parser_baseline_evaluation.json` | Field-level parser baseline metrics |
+| `reports/phase5_parser_baseline_failures.csv` | Candidate IDs and failed field names only |
+
+The current reviewed baseline has `13` structure-training eligible
+`ORDERED_CLOSE_THEN_ENTRY` rows. Portfolio-effect training is skipped because
+there are currently `0` eligible portfolio-effect labels. The export keeps
+`data/derived/` ignored by Git because it contains proprietary message text.
+
+Runtime ordered close-then-entry application remains atomic: if the close child
+has no matching open position, the parent routes to review, child 2 is not
+executed, and holdings remain unchanged.
+
 ---
 
 ## Run tests

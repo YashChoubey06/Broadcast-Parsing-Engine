@@ -18,6 +18,7 @@ data/raw/*.csv
 # Local portfolio files and reviewed-label exports
 data/verified_initial_positions_current.csv
 data/verified_shadow_labels.csv
+data/derived/
 data/review/*.csv
 data/review/*.json
 data/review/backups/
