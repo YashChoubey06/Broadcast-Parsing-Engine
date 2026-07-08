@@ -44,7 +44,7 @@ from src.repository_interfaces import (
     SnapshotRepository,
     TradeEventRepository,
 )
-from src.position_identity import IdentityMatchStatus, IdentityResolutionResult
+from src.position_identity import IdentityMatchStatus, IdentityResolutionResult, identity_from_values
 from src.schemas import HoldingsResult, ParsedTradeEvent, PositionState, ReviewItem
 
 # Tolerance for "close enough to zero → treat as closed"
@@ -223,10 +223,12 @@ class HoldingsEngine:
         if existing and existing.status == "OPEN":
             return self._handle_add(event, direction, processing_order)
 
-        # Create new position
+        # Create new position, or reopen a closed full-identity row when an
+        # ordered close-then-entry re-enters the same side.
         alloc = event.quantity_percent or _DEFAULT_ALLOC
-        pos_before = None
+        pos_before = self._find_closed_full_identity_position(event, direction)
         pos = PositionState(
+            position_id=pos_before.position_id if pos_before else None,
             portfolio_id=self._portfolio_id,
             market_group=event.market_group,
             symbol=symbol,
@@ -241,7 +243,7 @@ class HoldingsEngine:
             status="OPEN",
             opened_at=_now_iso(),
             updated_at=_now_iso(),
-            version=1,
+            version=(pos_before.version + 1) if pos_before else 1,
         )
         pos = self._positions.save_position(pos)
         return self._finalise(event, pos_before, pos, processing_order, STATUS_APPLIED)
@@ -578,6 +580,36 @@ class HoldingsEngine:
             status=IdentityMatchStatus.NO_MATCH,
             explanation="Legacy repository returned no position.",
         )
+
+    def _find_closed_full_identity_position(
+        self,
+        event: ParsedTradeEvent,
+        direction: str,
+    ) -> Optional[PositionState]:
+        target = identity_from_values(
+            portfolio_id=self._portfolio_id,
+            symbol=event.symbol or "",
+            direction=direction,
+            market_group=event.market_group,
+            contract_month=event.contract_month,
+            option_type=event.option_type,
+            strike_price=event.strike_price,
+        )
+        for position in self._positions.list_all_positions(self._portfolio_id):
+            if position.status != "CLOSED":
+                continue
+            candidate = identity_from_values(
+                portfolio_id=position.portfolio_id,
+                symbol=position.symbol,
+                direction=position.direction,
+                market_group=position.market_group,
+                contract_month=position.contract_month,
+                option_type=position.option_type,
+                strike_price=position.strike_price,
+            )
+            if candidate.full_key() == target.full_key():
+                return position
+        return None
 
     def _resolve_best_existing(
         self,

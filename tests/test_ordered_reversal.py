@@ -207,11 +207,13 @@ def test_conditional_correction_and_single_clause_behaviour():
     assert single.child_events[0].final_action == "OPEN_LONG"
 
 
-def test_same_side_second_clause_is_not_reversal():
+def test_same_side_second_clause_is_valid_close_then_entry():
     bundle = parse_bundle("FULL PROFIT BOOK IN TSLA & BUY 50% TSLA")
 
-    assert bundle.needs_review
-    assert "ORDERED_NOT_OPPOSITE_DIRECTION" in bundle.validation_errors
+    assert bundle.is_ordered
+    assert not bundle.needs_review
+    assert bundle.child_events[0].direction == "LONG"
+    assert bundle.child_events[1].direction == "LONG"
 
 
 def test_long_to_short_execution_closes_long_and_opens_short():
@@ -224,6 +226,7 @@ def test_long_to_short_execution_closes_long_and_opens_short():
     result = make_service(conn).apply_bundle(bundle)
 
     assert result.status == "OK"
+    assert result.portfolio_effect_status == "REVERSAL"
     repo = SQLitePositionRepository(conn)
     closed_long = repo.list_all_positions("default")[0]
     short = repo.get_position("default", "TSLA", direction="SHORT", market_group="GLOBAL_EQUITY")
@@ -246,11 +249,68 @@ def test_short_to_long_execution():
     result = make_service(conn).apply_bundle(bundle)
 
     assert result.status == "OK"
+    assert result.portfolio_effect_status == "REVERSAL"
     long_pos = SQLitePositionRepository(conn).get_position(
         "default", "TSLA", direction="LONG", market_group="GLOBAL_EQUITY"
     )
     assert long_pos.current_allocation_pct == Decimal("50")
     assert long_pos.stop_loss == Decimal("1050")
+
+
+def test_long_to_long_same_side_reentry_closes_and_reopens_long():
+    conn = make_conn()
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX uq_positions_phase2_full_identity
+        ON positions (
+            portfolio_id, market_group, symbol, contract_month,
+            option_type, strike_price, direction
+        )
+        """
+    )
+    save_position(conn, portfolio_id="default", market_group="GLOBAL_EQUITY")
+    bundle = parse_bundle("EXIT FROM TSLA & BUY 50% TSLA @1124")
+
+    result = make_service(conn).apply_bundle(bundle)
+
+    assert result.status == "OK"
+    assert result.portfolio_effect_status == "SAME_SIDE_REENTRY"
+    rows = SQLitePositionRepository(conn).list_all_positions("default")
+    assert len(rows) == 1
+    assert rows[0].direction == "LONG"
+    assert rows[0].status == "OPEN"
+    assert rows[0].current_allocation_pct == Decimal("50")
+    assert conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0] == 2
+
+
+def test_short_to_short_same_side_reentry_closes_and_reopens_short():
+    conn = make_conn()
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX uq_positions_phase2_full_identity
+        ON positions (
+            portfolio_id, market_group, symbol, contract_month,
+            option_type, strike_price, direction
+        )
+        """
+    )
+    save_position(conn, portfolio_id="default", market_group="GLOBAL_EQUITY", direction="SHORT")
+    bundle = parse_bundle(
+        "EXIT FROM TSLA & SELL 50% TSLA @1124",
+        existing_long=False,
+        existing_short=True,
+    )
+
+    result = make_service(conn).apply_bundle(bundle)
+
+    assert result.status == "OK"
+    assert result.portfolio_effect_status == "SAME_SIDE_REENTRY"
+    rows = SQLitePositionRepository(conn).list_all_positions("default")
+    assert len(rows) == 1
+    assert rows[0].direction == "SHORT"
+    assert rows[0].status == "OPEN"
+    assert rows[0].current_allocation_pct == Decimal("50")
+    assert conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0] == 2
 
 
 def test_child_1_failure_and_missing_prior_position_change_nothing():

@@ -33,6 +33,7 @@ class OrderedApplyResult:
     child_results: list[HoldingsResult] | None = None
     failed_child_index: Optional[int] = None
     review_reason: Optional[str] = None
+    portfolio_effect_status: Optional[str] = None
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -40,6 +41,14 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
         return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
     except Exception:
         return set()
+
+
+def _portfolio_effect_status(old_side: Optional[str], new_side: Optional[str]) -> str:
+    if old_side not in {"LONG", "SHORT"} or new_side not in {"LONG", "SHORT"}:
+        return "NOT_EVALUATED"
+    if old_side == new_side:
+        return "SAME_SIDE_REENTRY"
+    return "REVERSAL"
 
 
 class OrderedEventService:
@@ -151,7 +160,10 @@ class OrderedEventService:
                 review_reason="ORDERED_CHILD_1_FAILED",
             )
 
-        postcheck = self._post_child1_preflight(child2)
+        old_side = child1.direction
+        portfolio_effect_status = _portfolio_effect_status(old_side, child2.direction)
+
+        postcheck = self._post_child1_preflight(child2, old_side)
         if postcheck:
             return OrderedApplyResult(
                 "MANUAL_REVIEW",
@@ -176,7 +188,12 @@ class OrderedEventService:
 
         if self._mark_parent_processed and parent_id:
             self._processed.mark_processed(parent_id, "", "APPLIED", trade_event_id=None)
-        return OrderedApplyResult("OK", "Applied ordered reversal.", child_results)
+        return OrderedApplyResult(
+            "OK",
+            f"Applied ordered close-then-entry ({portfolio_effect_status}).",
+            child_results,
+            portfolio_effect_status=portfolio_effect_status,
+        )
 
     def _preflight(self, child1: ParsedTradeEvent, child2: ParsedTradeEvent) -> Optional[str]:
         if child1.final_action != "CLOSE_POSITION":
@@ -185,9 +202,8 @@ class OrderedEventService:
             return "ORDERED_CHILD_2_INVALID_ENTRY"
         if child1.direction not in {"LONG", "SHORT"}:
             return "ORDERED_CHILD_1_NO_POSITION"
-        expected_new_side = "SHORT" if child1.direction == "LONG" else "LONG"
-        if child2.direction != expected_new_side:
-            return "ORDERED_NOT_OPPOSITE_DIRECTION"
+        if child2.direction not in {"LONG", "SHORT"}:
+            return "ORDERED_CHILD_2_INVALID_ENTRY"
 
         identity_reason = self._inherit_and_compare_identity(child1, child2)
         if identity_reason:
@@ -210,29 +226,35 @@ class OrderedEventService:
         }:
             return "ORDERED_CHILD_1_AMBIGUOUS_IDENTITY"
 
-        opposite_result = self._positions.resolve_position(
-            portfolio_id=self._portfolio_id,
-            symbol=child2.symbol or "",
-            direction=child2.direction,
-            market_group=child2.market_group,
-            contract_month=child2.contract_month,
-            option_type=child2.option_type,
-            strike_price=child2.strike_price,
-        )
-        if opposite_result.status in {
-            IdentityMatchStatus.EXACT_MATCH,
-            IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
-        }:
-            return "ORDERED_EXISTING_OPPOSITE_POSITION"
-        if opposite_result.status in {
-            IdentityMatchStatus.AMBIGUOUS_MATCH,
-            IdentityMatchStatus.IDENTITY_CONFLICT,
-        }:
-            return "ORDERED_CHILD_1_AMBIGUOUS_IDENTITY"
+        if child2.direction != child1.direction:
+            new_side_result = self._positions.resolve_position(
+                portfolio_id=self._portfolio_id,
+                symbol=child2.symbol or "",
+                direction=child2.direction,
+                market_group=child2.market_group,
+                contract_month=child2.contract_month,
+                option_type=child2.option_type,
+                strike_price=child2.strike_price,
+            )
+            if new_side_result.status in {
+                IdentityMatchStatus.EXACT_MATCH,
+                IdentityMatchStatus.UNIQUE_FALLBACK_MATCH,
+            }:
+                return "ORDERED_EXISTING_OPPOSITE_POSITION"
+            if new_side_result.status in {
+                IdentityMatchStatus.AMBIGUOUS_MATCH,
+                IdentityMatchStatus.IDENTITY_CONFLICT,
+            }:
+                return "ORDERED_CHILD_1_AMBIGUOUS_IDENTITY"
         return None
 
-    def _post_child1_preflight(self, child2: ParsedTradeEvent) -> Optional[str]:
-        old_side = "SHORT" if child2.direction == "LONG" else "LONG"
+    def _post_child1_preflight(
+        self,
+        child2: ParsedTradeEvent,
+        old_side: Optional[str],
+    ) -> Optional[str]:
+        if old_side not in {"LONG", "SHORT"}:
+            return "ORDERED_CHILD_1_NO_POSITION"
         old_result = self._positions.resolve_position(
             portfolio_id=self._portfolio_id,
             symbol=child2.symbol or "",

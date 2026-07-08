@@ -739,10 +739,8 @@ def _validate_ordered_children(
         return "ORDERED_CHILD_2_INVALID_ENTRY"
     if not _same_non_direction_identity(child1, child2):
         return "ORDERED_CHILD_IDENTITY_MISMATCH"
-    if old_side == "LONG" and child2.resolved_position_side != "SHORT":
-        return "ORDERED_NOT_OPPOSITE_DIRECTION"
-    if old_side == "SHORT" and child2.resolved_position_side != "LONG":
-        return "ORDERED_NOT_OPPOSITE_DIRECTION"
+    if child2.resolved_position_side not in {"LONG", "SHORT"}:
+        return "ORDERED_CHILD_2_INVALID_ENTRY"
     if old_side is None:
         return "ORDERED_CHILD_1_NO_POSITION"
     return None
