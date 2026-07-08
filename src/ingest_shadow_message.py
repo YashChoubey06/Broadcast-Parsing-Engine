@@ -25,11 +25,21 @@ def main():
     if result["status"] == "DUPLICATE":
         print(f"Message {args.message_id} is already in the system. Ignored.")
     else:
-        event = result["event"]
         print(f"Ingested: {args.message_id}")
-        print(f"Action: {event.final_action}")
-        print(f"Symbol: {event.symbol}")
-        print(f"Confidence: {event.ml_confidence}")
+        bundle = result.get("bundle")
+        if bundle and bundle.is_ordered:
+            print(f"Bundle: {bundle.bundle_type}")
+            print(f"Ordered: {bundle.is_ordered}")
+            for child in bundle.child_events:
+                print(
+                    f"Child {child.child_event_index}: "
+                    f"{child.final_action} {child.symbol} {child.direction}"
+                )
+        else:
+            event = result["event"]
+            print(f"Action: {event.final_action}")
+            print(f"Symbol: {event.symbol}")
+            print(f"Confidence: {event.ml_confidence}")
         print(f"Status: {result['status']}")
         
 if __name__ == "__main__":

@@ -448,6 +448,88 @@ def test_shadow_and_verified_ordered_workflow(tmp_path):
         assert ParsedMessageBundle.from_json(prediction).child_events[1].clause_text.startswith("50% SELL")
 
 
+def test_shadow_pilot_crude_oil_mini_ingests_ordered_bundle_and_applies(tmp_path):
+    db_path = tmp_path / "pilot_crude_shadow.db"
+    init_db(db_path)
+    apply_migration(db_path)
+    with get_connection(db_path) as conn:
+        SQLitePositionRepository(conn).save_position(PositionState(
+            portfolio_id="verified",
+            market_group="UNKNOWN",
+            symbol="CRUDE_MINI",
+            direction="LONG",
+            current_allocation_pct=Decimal("100"),
+            status="OPEN",
+        ))
+        conn.commit()
+
+    res = ingest_message(
+        "pilot-005",
+        "EXIT FROM CRUDEOILM & 50% SELL CRUDEOILM @8024 SL 8200 TGT 7800",
+        "Unknown",
+        db_path,
+    )
+    assert res["status"] == "SHADOW_APPLIED"
+    assert res["bundle"].is_ordered
+    assert res["bundle"].bundle_type == "ORDERED_REVERSAL"
+
+    with get_connection(db_path) as conn:
+        prediction = conn.execute(
+            "SELECT prediction_json FROM parser_predictions WHERE source_message_id='pilot-005'"
+        ).fetchone()[0]
+        bundle = ParsedMessageBundle.from_json(prediction)
+        assert bundle.is_ordered
+        assert bundle.child_events[0].final_action == "CLOSE_POSITION"
+        assert bundle.child_events[0].symbol == "CRUDE_MINI"
+        assert bundle.child_events[0].position_effect == "CLOSE"
+        assert bundle.child_events[1].final_action == "OPEN_SHORT"
+        assert bundle.child_events[1].symbol == "CRUDE_MINI"
+        assert bundle.child_events[1].direction == "SHORT"
+        assert bundle.child_events[1].entry_capacity_pct == Decimal("50")
+        assert bundle.child_events[1].stop_loss == Decimal("8200")
+        assert bundle.child_events[1].targets == [Decimal("7800")]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shadow_events WHERE source_message_id='pilot-005'"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT current_allocation_pct FROM positions WHERE portfolio_id='verified' AND symbol='CRUDE_MINI' AND direction='LONG'"
+        ).fetchone()[0] == "100"
+
+    assert approve_as_parsed("pilot-005", "Reviewer", db_path)["status"] == "APPROVED"
+
+    with get_connection(db_path) as conn:
+        verified_long = conn.execute(
+            "SELECT current_allocation_pct, status FROM positions WHERE portfolio_id='verified' AND symbol='CRUDE_MINI' AND direction='LONG'"
+        ).fetchone()
+        verified_short = conn.execute(
+            "SELECT current_allocation_pct, stop_loss, targets_json FROM positions WHERE portfolio_id='verified' AND symbol='CRUDE_MINI' AND direction='SHORT' AND status='OPEN'"
+        ).fetchone()
+        assert verified_long["current_allocation_pct"] == "0"
+        assert verified_long["status"] == "CLOSED"
+        assert verified_short["current_allocation_pct"] == "50"
+        assert verified_short["stop_loss"] == "8200"
+        assert json.loads(verified_short["targets_json"]) == ["7800"]
+
+
+def test_shadow_pilot_buy_tsla_ingestion_still_stores_single_event(tmp_path):
+    db_path = tmp_path / "pilot_tsla_shadow.db"
+    init_db(db_path)
+    apply_migration(db_path)
+
+    res = ingest_message("pilot-001", "BUY 50% TSLA", "Unknown", db_path)
+
+    assert res["status"] == "PENDING_REVIEW"
+    assert not res["bundle"].is_ordered
+    assert res["event"].final_action == "OPEN_LONG"
+    assert res["event"].symbol == "TSLA"
+    assert res["event"].entry_capacity_pct == Decimal("50")
+    with get_connection(db_path) as conn:
+        prediction = conn.execute(
+            "SELECT prediction_json FROM parser_predictions WHERE source_message_id='pilot-001'"
+        ).fetchone()[0]
+        assert ParsedMessageBundle.from_json(prediction).child_events[0].final_action == "OPEN_LONG"
+
+
 def test_rejection_preserves_shadow_history_and_edit_approve_corrects_children(tmp_path):
     db_path = tmp_path / "ordered_shadow_edit.db"
     init_db(db_path)
