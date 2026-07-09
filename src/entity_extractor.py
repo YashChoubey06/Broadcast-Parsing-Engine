@@ -117,8 +117,10 @@ _IN_SYMBOL_FALLBACK_RE = re.compile(
 _SYMBOL_FALLBACK_STOPWORDS = {
     "AT", "CMP", "ABOVE", "BELOW", "IF", "WHEN", "WITH", "SL", "STOP",
     "TGT", "TARGET", "PROFIT", "BOOK", "FULL", "PART", "EXIT", "FROM",
-    "POSITION", "POSITIONS", "LONG", "SHORT",
+    "POSITION", "POSITIONS", "LONG", "SHORT", "BUY", "SELL", "S", "L",
+    "WAIT", "CONFIRMATION", "CONFIRM",
 }
+_SYMBOL_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9._-]{1,14}\b")
 
 # Correction flag
 _CORRECTION_RE = re.compile(r"\bCORRECTION\b", re.IGNORECASE)
@@ -166,6 +168,17 @@ _GROUP_RE = re.compile(
 _MULTI_SEP_RE = re.compile(r"\s+AND\s+|\s*&\s*|\s*,\s*(?=[A-Z])", re.IGNORECASE)
 
 
+def _is_symbol_like_token(token: str) -> bool:
+    token = token.strip().upper()
+    if token in _SYMBOL_FALLBACK_STOPWORDS:
+        return False
+    if token in _MONTH_NORM:
+        return False
+    if token[0].isdigit():
+        return False
+    return True
+
+
 def _clean_num(s: str) -> Optional[Decimal]:
     """Strip commas and convert to Decimal, or return None on failure."""
     try:
@@ -187,6 +200,37 @@ def _parse_price_list(raw: str) -> list[Decimal]:
         if v is not None:
             result.append(v)
     return result
+
+
+def _fallback_symbol_candidates(text: str, covered_spans: list[tuple[int, int]]) -> list[str]:
+    upper = text.upper()
+    candidates: list[str] = []
+    has_entry_action = bool(_LONG_RE.search(upper) or _SHORT_RE.search(upper))
+    has_list_separator = bool(_MULTI_SEP_RE.search(upper))
+
+    if not has_entry_action:
+        return candidates
+
+    for match in _SYMBOL_TOKEN_RE.finditer(upper):
+        start, end = match.span()
+        if any(start >= span_start and end <= span_end for span_start, span_end in covered_spans):
+            continue
+
+        token = match.group(0)
+        if not _is_symbol_like_token(token):
+            continue
+
+        before = upper[:start]
+        is_first_entry_symbol = bool(
+            re.search(r"\b(?:BUY|SELL)\s+(?:\d+(?:\.\d+)?\s*%\s+)?$", before)
+            or re.search(r"\b\d+(?:\.\d+)?\s*%\s+(?:BUY|SELL)\s+$", before)
+        )
+        follows_list_separator = bool(re.search(r"(?:,|&|\bAND\b)\s*$", before))
+
+        if is_first_entry_symbol or (has_list_separator and follows_list_separator):
+            candidates.append(token)
+
+    return list(dict.fromkeys(candidates))
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +330,25 @@ class EntityExtractor:
                 er.is_multi_instrument = True
                 er.symbol_raw = " & ".join(m[0] for m in matches)
                 er.symbol = None  # ambiguous – let caller decide
+
+        fallback_candidates = _fallback_symbol_candidates(
+            text,
+            [(m[2], m[3]) for m in matches],
+        )
+        for candidate in fallback_candidates:
+            if candidate not in er.symbols:
+                er.symbols.append(candidate)
+
+        if er.symbols:
+            if len(er.symbols) == 1:
+                er.symbol = er.symbols[0]
+                if er.symbol_raw is None:
+                    er.symbol_raw = er.symbol
+            else:
+                er.is_multi_instrument = True
+                if er.symbol_raw is None:
+                    er.symbol_raw = " & ".join(er.symbols)
+                er.symbol = None
 
         if not er.symbols:
             fallback = (

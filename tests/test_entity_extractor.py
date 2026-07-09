@@ -46,6 +46,16 @@ class TestSymbolExtraction:
         assert "GOLD" in er.symbols
         assert "SILVER" in er.symbols
 
+    def test_implicit_multi_instrument_entry_detected(self):
+        ex = make_extractor()
+        er = ex.extract(
+            "Buy 50% NVDA at 5010, sl 5000 tgt 5030-5035, MSFT at 210, sl 200 tgt 230,235"
+        )
+        assert er.is_multi_instrument
+        assert er.symbol is None
+        assert er.symbols == ["NVDA", "MSFT"]
+        assert er.execution_prices == [Decimal("5010"), Decimal("210")]
+
     def test_no_symbol_found(self):
         ex = make_extractor()
         er = ex.extract("This is a random admin message")

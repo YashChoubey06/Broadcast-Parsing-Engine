@@ -237,6 +237,53 @@ def test_invalid_missing_entry_capacity_messages_are_review_only():
         assert get_pos(TEST_DB_PATH, "shadow", symbol) is None
         assert count_rows(TEST_DB_PATH, "shadow_events", msg_id) == 0
 
+def test_implicit_multi_instrument_entry_is_review_only_and_cannot_approve_as_parsed():
+    res = ingest_message(
+        "live-v2-safety-006",
+        "Buy 50% NVDA at 5010, sl 5000 tgt 5030-5035, MSFT at 210, sl 200 tgt 230,235",
+        "GLOBAL_EQUITY",
+        TEST_DB_PATH,
+    )
+    assert res["status"] == "PENDING_REVIEW"
+    assert res["event"].final_action == "SPLIT_REQUIRED"
+    assert res["event"].symbol is None
+    assert res["event"].symbols == ["NVDA", "MSFT"]
+    assert res["event"].is_multi_instrument
+    assert res["event"].auto_apply_eligible is False
+    assert res["event"].needs_review is True
+
+    with closing(get_connection(TEST_DB_PATH)) as conn:
+        prediction = conn.execute(
+            "SELECT validation_status FROM parser_predictions WHERE source_message_id='live-v2-safety-006'"
+        ).fetchone()
+        assert prediction["validation_status"] == "INVALID"
+
+    assert get_pos(TEST_DB_PATH, "shadow", "NVDA") is None
+    assert get_pos(TEST_DB_PATH, "shadow", "MSFT") is None
+    assert count_rows(TEST_DB_PATH, "shadow_events", "live-v2-safety-006") == 0
+
+    app_res = approve_as_parsed("live-v2-safety-006", "Reviewer", TEST_DB_PATH)
+    assert app_res["status"] == "ERROR"
+    assert "INVALID_PREDICTION_CANNOT_APPROVE_AS_PARSED" in app_res["message"]
+
+def test_single_instrument_nvda_entry_remains_valid_and_shadow_applies():
+    res = ingest_message(
+        "single-nvda",
+        "BUY 50% NVDA at 5010 SL 5000 TGT 5030-5035",
+        "GLOBAL_EQUITY",
+        TEST_DB_PATH,
+    )
+    assert res["status"] == "PENDING_REVIEW"
+    assert res["event"].final_action == "OPEN_LONG"
+    assert res["event"].symbol == "NVDA"
+    assert res["event"].symbols == ["NVDA"]
+    assert res["event"].auto_apply_eligible is True
+    assert res["event"].needs_review is False
+
+    shadow = get_pos(TEST_DB_PATH, "shadow", "NVDA")
+    assert shadow is not None
+    assert shadow["current_allocation_pct"] == "50"
+
 def test_wrong_segment_sbin_stays_review_only_but_nse_explicit_size_applies_shadow():
     wrong_segment = ingest_message(
         "sbin-wrong-segment",

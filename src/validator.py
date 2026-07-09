@@ -12,6 +12,7 @@ This is the last safety check before any position change.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Optional
 
@@ -36,6 +37,45 @@ _NEEDS_SYMBOL = {
 }
 
 _ENTRY_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"}
+_SYMBOL_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9._-]{1,14}\b")
+_SYMBOL_STOPWORDS = {
+    "BUY", "SELL", "AT", "CMP", "ABOVE", "BELOW", "IF", "WHEN", "WITH",
+    "SL", "S", "L", "STOP", "LOSS", "TGT", "TARGET", "PROFIT", "BOOK",
+    "FULL", "PART", "EXIT", "FROM", "POSITION", "POSITIONS", "LONG", "SHORT",
+    "WAIT", "CONFIRMATION", "CONFIRM",
+}
+
+
+def _symbol_like_tokens(raw_text: str) -> list[str]:
+    tokens = []
+    for match in _SYMBOL_TOKEN_RE.finditer((raw_text or "").upper()):
+        token = match.group(0)
+        if token in _SYMBOL_STOPWORDS or token[0].isdigit():
+            continue
+        tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def _looks_like_unsupported_multi_instrument_single(event: ParsedTradeEvent) -> bool:
+    if event.is_multi_instrument:
+        return False
+    if len(event.symbols or []) != 1 or not event.symbol:
+        return False
+    if event.final_action not in _ENTRY_ACTIONS:
+        return False
+
+    raw_symbols = _symbol_like_tokens(event.raw_text)
+    extra_symbols = [token for token in raw_symbols if token != event.symbol]
+    if not extra_symbols:
+        return False
+
+    has_extra_trade_structure = (
+        len(event.execution_prices) > 1
+        or len(re.findall(r"\b(?:s/?l|stoploss|stop\s+loss|stop)\b", event.raw_text or "", re.IGNORECASE)) > 1
+        or len(re.findall(r"\b(?:tgt|target|t1|t2|1st\s+target|2nd\s+target)\b", event.raw_text or "", re.IGNORECASE)) > 1
+        or bool(re.search(r"(?:,|&|\bAND\b)\s*" + re.escape(extra_symbols[0]) + r"\b", event.raw_text or "", re.IGNORECASE))
+    )
+    return has_extra_trade_structure
 
 
 def validate(
@@ -83,6 +123,14 @@ def validate(
         event.auto_apply_eligible = False
         event.needs_review = True
         warnings.append("Multi-instrument message must be split before applying.")
+        return event
+
+    if _looks_like_unsupported_multi_instrument_single(event):
+        event.auto_apply_eligible = False
+        event.needs_review = True
+        warnings.append(
+            "Possible unsupported multi-instrument entry parsed as a single event; manual review required."
+        )
         return event
 
     # ---- Percentage range --------------------------------------------------

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from src.hybrid_parser import HybridParser
 from src.ml_classifier import MLClassifier
 from src.schemas import ParsedTradeEvent
+from src.validator import validate
 
 
 def make_parser(mock_ml_action="REDUCE_POSITION", mock_ml_confidence=0.98):
@@ -174,6 +175,62 @@ class TestMultiInstrumentParse:
         parser = make_parser()
         event = parser.parse("SL touched in Gold & Silver")
         assert event.is_multi_instrument
+
+    def test_implicit_multi_instrument_entry_routes_to_review(self):
+        parser = make_parser(mock_ml_action="OPEN_LONG", mock_ml_confidence=0.99)
+        event = parser.parse(
+            "Buy 50% NVDA at 5010, sl 5000 tgt 5030-5035, MSFT at 210, sl 200 tgt 230,235",
+            market_group="GLOBAL_EQUITY",
+        )
+        assert event.final_action == "SPLIT_REQUIRED"
+        assert event.symbol is None
+        assert event.symbols == ["NVDA", "MSFT"]
+        assert event.is_multi_instrument
+        assert event.auto_apply_eligible is False
+        assert event.needs_review is True
+
+    def test_single_instrument_entry_with_targets_remains_valid(self):
+        parser = make_parser(mock_ml_action="OPEN_LONG", mock_ml_confidence=0.99)
+        event = parser.parse(
+            "BUY 50% NVDA at 5010 SL 5000 TGT 5030-5035",
+            market_group="GLOBAL_EQUITY",
+        )
+        assert event.final_action == "OPEN_LONG"
+        assert event.symbol == "NVDA"
+        assert event.symbols == ["NVDA"]
+        assert not event.is_multi_instrument
+        assert event.auto_apply_eligible is True
+        assert event.needs_review is False
+
+    def test_gold_silver_copper_entry_stays_review_only(self):
+        parser = make_parser(mock_ml_action="OPEN_LONG", mock_ml_confidence=0.99)
+        event = parser.parse("BUY GOLD,SILVER & COPPER", market_group="GLOBAL_EQUITY")
+        assert event.final_action == "SPLIT_REQUIRED"
+        assert event.symbol is None
+        assert event.symbols == ["GOLD", "SILVER", "COPPER"]
+        assert event.is_multi_instrument
+        assert event.auto_apply_eligible is False
+        assert event.needs_review is True
+
+    def test_validator_rejects_bypassed_multi_instrument_single_event(self):
+        event = ParsedTradeEvent(
+            source_message_id="bypass-1",
+            raw_text="BUY 50% NVDA at 5010, MSFT at 210",
+            final_action="OPEN_LONG",
+            symbol="NVDA",
+            symbols=["NVDA"],
+            direction="LONG",
+            quantity_percent=Decimal("50"),
+            quantity_basis="CUSTOMER_BUYING_CAPACITY",
+            execution_prices=[Decimal("5010"), Decimal("210")],
+            resolution_source="RULE",
+        )
+
+        validate(event, confidence=1.0)
+
+        assert event.auto_apply_eligible is False
+        assert event.needs_review is True
+        assert "unsupported multi-instrument" in " ".join(event.validation_warnings)
 
     def test_multi_instrument_split(self):
         parser = make_parser()

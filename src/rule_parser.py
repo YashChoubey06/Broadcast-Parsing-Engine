@@ -218,7 +218,19 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 5: SL TOUCH  → CLOSE_POSITION
+    # Priority 5: MULTI-INSTRUMENT
+    # ------------------------------------------------------------------
+    if extraction.is_multi_instrument:
+        r.rule_action = "SPLIT_REQUIRED"
+        r.is_multi_instrument = True
+        r.requires_context = True
+        r.needs_review = True
+        r.rule_confidence = 1.0
+        r.rule_notes = "Multiple instruments detected; split or review required."
+        return r
+
+    # ------------------------------------------------------------------
+    # Priority 6: SL TOUCH  → CLOSE_POSITION
     # ------------------------------------------------------------------
     if extraction.has_sl_touch:
         r.rule_action = "CLOSE_POSITION"
@@ -233,7 +245,7 @@ def apply_rules(
         return r
 
     # ------------------------------------------------------------------
-    # Priority 6: FULL PROFIT / BOOK PROFIT / EXIT  → CLOSE_POSITION
+    # Priority 7: FULL PROFIT / BOOK PROFIT / EXIT  → CLOSE_POSITION
     # ------------------------------------------------------------------
     if extraction.has_full_profit and not extraction.quantity_percent:
         r.rule_action = "CLOSE_POSITION"
@@ -422,17 +434,6 @@ def apply_rules(
         return _resolve_sell(text, extraction, existing_long, existing_short, has_holdings_context)
 
     # ------------------------------------------------------------------
-    # Multi-instrument
-    # ------------------------------------------------------------------
-    if extraction.is_multi_instrument:
-        r.rule_action = "SPLIT_REQUIRED"
-        r.is_multi_instrument = True
-        r.requires_context = True
-        r.needs_review = True
-        r.rule_confidence = 1.0
-        r.rule_notes = "Multiple instruments detected; split or review required."
-        return r
-
     # Rules inconclusive; ML will decide
     return r
 
