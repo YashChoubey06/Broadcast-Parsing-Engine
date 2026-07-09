@@ -51,6 +51,13 @@ def get_pos(db_path, portfolio_id, symbol, direction="LONG"):
             (portfolio_id, symbol, direction)
         ).fetchone()
 
+def count_rows(db_path, table_name, source_message_id):
+    with closing(get_connection(db_path)) as conn:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM {table_name} WHERE source_message_id=?",
+            (source_message_id,),
+        ).fetchone()[0]
+
 def test_migration_is_idempotent():
     # Already applied in setup
     apply_migration() # Second time
@@ -181,6 +188,116 @@ def test_same_message_in_shadow_and_verified_events():
     with closing(get_connection(TEST_DB_PATH)) as conn:
         assert conn.execute("SELECT COUNT(*) as c FROM shadow_events WHERE source_message_id='msg_shared'").fetchone()["c"] == 1
         assert conn.execute("SELECT COUNT(*) as c FROM verified_events WHERE source_message_id='msg_shared'").fetchone()["c"] == 1
+
+def test_invalid_prediction_cannot_be_approved_as_parsed():
+    res = ingest_message(
+        "invalid-gold",
+        "BUY GOLD @4102 SL 4000 TGT 4500-4600",
+        "International Market",
+        TEST_DB_PATH,
+    )
+    assert res["status"] == "PENDING_REVIEW"
+    assert res["event"].needs_review is True
+    assert res["event"].auto_apply_eligible is False
+
+    app_res = approve_as_parsed("invalid-gold", "Reviewer", TEST_DB_PATH)
+    assert app_res["status"] == "ERROR"
+    assert "INVALID_PREDICTION_CANNOT_APPROVE_AS_PARSED" in app_res["message"]
+
+    with closing(get_connection(TEST_DB_PATH)) as conn:
+        assert conn.execute(
+            "SELECT processing_status FROM incoming_messages WHERE source_message_id='invalid-gold'"
+        ).fetchone()[0] == "PENDING_REVIEW"
+    assert get_pos(TEST_DB_PATH, "shadow", "GOLD") is None
+    assert get_pos(TEST_DB_PATH, "verified", "GOLD") is None
+    assert count_rows(TEST_DB_PATH, "shadow_events", "invalid-gold") == 0
+    assert count_rows(TEST_DB_PATH, "verified_events", "invalid-gold") == 0
+
+def test_invalid_missing_entry_capacity_messages_are_review_only():
+    cases = [
+        ("live-002", "BUY GOLD @4102 SL 4000 TGT 4500-4600", "GOLD"),
+        ("live-003", "BUY SBIN @1020 SL 1000 TGT 1040-1050", "SBIN"),
+    ]
+    for msg_id, text, symbol in cases:
+        res = ingest_message(msg_id, text, "International Market", TEST_DB_PATH)
+        assert res["status"] == "PENDING_REVIEW"
+        assert res["event"].final_action == "OPEN_LONG"
+        assert res["event"].symbol == symbol
+        assert res["event"].quantity_percent is None
+        assert res["event"].auto_apply_eligible is False
+        assert res["event"].needs_review is True
+        assert "Entry capacity missing" in " ".join(res["event"].validation_warnings)
+
+        with closing(get_connection(TEST_DB_PATH)) as conn:
+            prediction = conn.execute(
+                "SELECT validation_status FROM parser_predictions WHERE source_message_id=?",
+                (msg_id,),
+            ).fetchone()
+            assert prediction["validation_status"] == "INVALID"
+        assert get_pos(TEST_DB_PATH, "shadow", symbol) is None
+        assert count_rows(TEST_DB_PATH, "shadow_events", msg_id) == 0
+
+def test_wrong_segment_sbin_stays_review_only_but_nse_explicit_size_applies_shadow():
+    wrong_segment = ingest_message(
+        "sbin-wrong-segment",
+        "BUY SBIN @1020 SL 1000 TGT 1040-1050",
+        "International Market",
+        TEST_DB_PATH,
+    )
+    assert wrong_segment["status"] == "PENDING_REVIEW"
+    assert wrong_segment["event"].needs_review is True
+    assert get_pos(TEST_DB_PATH, "shadow", "SBIN") is None
+
+    safe_nse = ingest_message(
+        "sbin-nse-sized",
+        "BUY 50% SBIN @1020 SL 1000 TGT 1040-1050",
+        "NSE",
+        TEST_DB_PATH,
+    )
+    assert safe_nse["status"] == "PENDING_REVIEW"
+    assert safe_nse["event"].auto_apply_eligible is True
+    assert safe_nse["event"].needs_review is False
+
+    shadow = get_pos(TEST_DB_PATH, "shadow", "SBIN")
+    assert shadow is not None
+    assert shadow["current_allocation_pct"] == "50"
+
+def test_edit_and_approve_requires_valid_correction():
+    res = ingest_message(
+        "edit-invalid-gold",
+        "BUY GOLD @4102 SL 4000 TGT 4500-4600",
+        "International Market",
+        TEST_DB_PATH,
+    )
+    invalid_correction = res["event"]
+
+    app_res = edit_and_approve(
+        "edit-invalid-gold",
+        "Reviewer",
+        invalid_correction,
+        {"notes": "no sizing supplied"},
+        "still missing quantity",
+        TEST_DB_PATH,
+    )
+    assert app_res["status"] == "ERROR"
+    assert "CORRECTED_EVENT_INVALID" in app_res["message"]
+    assert get_pos(TEST_DB_PATH, "verified", "GOLD") is None
+
+    valid_correction = res["event"]
+    valid_correction.quantity_percent = Decimal("50")
+    valid_correction.entry_capacity_pct = Decimal("50")
+    app_res = edit_and_approve(
+        "edit-invalid-gold",
+        "Reviewer",
+        valid_correction,
+        {"quantity_percent": "50"},
+        "supplied safe size",
+        TEST_DB_PATH,
+    )
+    assert app_res["status"] == "APPROVED"
+    verified = get_pos(TEST_DB_PATH, "verified", "GOLD")
+    assert verified is not None
+    assert verified["current_allocation_pct"] == "50"
 
 def test_foreign_keys_active():
     with closing(get_connection(TEST_DB_PATH)) as conn:

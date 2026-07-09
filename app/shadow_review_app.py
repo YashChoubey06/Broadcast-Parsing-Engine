@@ -155,6 +155,8 @@ def main():
     pred_json = details["prediction_json"]
     prediction = parse_prediction(pred_json)
     event = first_event(prediction)
+    validation_status = details["validation_status"]
+    can_approve_as_parsed = validation_status == "VALID"
 
     st.header(f"Review: {msg_id}")
     st.subheader("Raw Message")
@@ -168,7 +170,12 @@ def main():
     with col2:
         st.subheader("Context & Status")
         st.write(f"**Segment:** {details['segment_name']}")
-        st.write(f"**Validation Status:** {details['validation_status']}")
+        st.write(f"**Validation Status:** {validation_status}")
+        if not can_approve_as_parsed:
+            st.warning(
+                "This prediction is INVALID and cannot be approved as parsed. "
+                "Use Edit & Approve, Needs Context, or Reject."
+            )
         if isinstance(prediction, ParsedMessageBundle):
             st.write(f"**Bundle Type:** {prediction.bundle_type}")
             st.write(f"**Ordered:** {prediction.is_ordered}")
@@ -225,7 +232,7 @@ def main():
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        if st.button("Approve as Parsed", type="primary"):
+        if st.button("Approve as Parsed", type="primary", disabled=not can_approve_as_parsed):
             execute_review_action("approve", msg_id)
     with col2:
         if st.button("Reject"):

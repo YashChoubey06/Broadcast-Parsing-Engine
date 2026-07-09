@@ -35,6 +35,8 @@ _NEEDS_SYMBOL = {
     "HOLD_POSITION", "UPDATE_STOP_LOSS", "TARGET_HIT",
 }
 
+_ENTRY_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"}
+
 
 def validate(
     event: ParsedTradeEvent,
@@ -90,6 +92,16 @@ def validate(
             event.auto_apply_eligible = False
             event.needs_review = True
             return event
+
+    if (
+        event.final_action in _ENTRY_ACTIONS
+        and event.quantity_basis == "CUSTOMER_BUYING_CAPACITY"
+        and event.quantity_percent is None
+    ):
+        errors.append("Entry capacity missing; cannot apply entry without quantity_percent.")
+        event.auto_apply_eligible = False
+        event.needs_review = True
+        return event
 
     # ---- Requires context --------------------------------------------------
     if event.requires_context or event.is_correction or event.is_conditional:

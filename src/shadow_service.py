@@ -291,7 +291,7 @@ def ingest_message(source_message_id: str, raw_text: str, segment_name: str, db_
         )
 
         if bundle.is_ordered:
-            if bundle.auto_apply_eligible and not bundle.needs_review:
+            if validation_status == "VALID" and bundle.auto_apply_eligible and not bundle.needs_review:
                 for child in bundle.child_events:
                     _copy_verified_baseline_to_shadow(conn, child)
                 service = _get_ordered_service(
@@ -308,6 +308,9 @@ def ingest_message(source_message_id: str, raw_text: str, segment_name: str, db_
             return {"status": "PENDING_REVIEW", "event": event, "bundle": bundle}
 
         safe_for_shadow = (
+            validation_status == "VALID" and
+            event.auto_apply_eligible and
+            not event.needs_review and
             event.symbol and
             event.final_action and
             not event.requires_context and
@@ -339,15 +342,24 @@ def _to_prediction_json(obj) -> str:
     return obj.to_json() if hasattr(obj, "to_json") else str(obj)
 
 
-def _load_prediction_json(conn: sqlite3.Connection, source_message_id: str) -> str:
+def _load_prediction_row(conn: sqlite3.Connection, source_message_id: str):
     cur = conn.execute(
-        "SELECT prediction_json FROM parser_predictions WHERE source_message_id = ? ORDER BY id DESC LIMIT 1",
+        """
+        SELECT prediction_json, validation_status
+        FROM parser_predictions
+        WHERE source_message_id = ?
+        ORDER BY id DESC LIMIT 1
+        """,
         (source_message_id,),
     )
     row = cur.fetchone()
     if not row:
         raise ValueError("No parser prediction found.")
-    return row["prediction_json"]
+    return row
+
+
+def _load_prediction_json(conn: sqlite3.Connection, source_message_id: str) -> str:
+    return _load_prediction_row(conn, source_message_id)["prediction_json"]
 
 
 def _load_prediction_object(conn: sqlite3.Connection, source_message_id: str):
@@ -359,6 +371,70 @@ def _load_prediction_object(conn: sqlite3.Connection, source_message_id: str):
     if "child_events" in data:
         return ParsedMessageBundle.from_json(prediction_json)
     return ParsedTradeEvent.from_json(prediction_json)
+
+
+def _prediction_from_json(prediction_json: str):
+    data = json.loads(prediction_json)
+    if "child_events" in data:
+        return ParsedMessageBundle.from_json(prediction_json)
+    return ParsedTradeEvent.from_json(prediction_json)
+
+
+def _approval_safety_errors(prediction, validation_status: str) -> list[str]:
+    errors = []
+    if validation_status != "VALID":
+        errors.append(f"validation_status={validation_status or 'UNKNOWN'}")
+
+    if isinstance(prediction, ParsedMessageBundle):
+        if prediction.auto_apply_eligible is not True:
+            errors.append("auto_apply_eligible=false")
+        if prediction.needs_review is True:
+            errors.append("needs_review=true")
+        for child in prediction.child_events:
+            label = child.child_event_index or "?"
+            if child.auto_apply_eligible is not True:
+                errors.append(f"child_{label}_auto_apply_eligible=false")
+            if child.needs_review is True:
+                errors.append(f"child_{label}_needs_review=true")
+    else:
+        if prediction.auto_apply_eligible is not True:
+            errors.append("auto_apply_eligible=false")
+        if prediction.needs_review is True:
+            errors.append("needs_review=true")
+
+    return errors
+
+
+def _reset_validation(event: ParsedTradeEvent) -> None:
+    event.auto_apply_eligible = False
+    event.needs_review = False
+    event.validation_errors = []
+    event.validation_warnings = []
+
+
+def _validate_corrected_for_apply(corrected_event) -> list[str]:
+    events = (
+        corrected_event.child_events
+        if isinstance(corrected_event, ParsedMessageBundle)
+        else [corrected_event]
+    )
+    errors = []
+    for event in events:
+        _reset_validation(event)
+        validate(event, confidence=event.ml_confidence, already_processed=False)
+        if event.auto_apply_eligible is not True or event.needs_review is True:
+            labels = event.validation_errors + event.validation_warnings
+            if not labels:
+                labels = ["corrected event is not auto-apply eligible"]
+            prefix = f"child_{event.child_event_index}: " if event.child_event_index else ""
+            errors.extend(f"{prefix}{label}" for label in labels)
+
+    if isinstance(corrected_event, ParsedMessageBundle):
+        corrected_event.auto_apply_eligible = not errors
+        corrected_event.needs_review = bool(errors)
+        corrected_event.validation_errors = list(errors)
+
+    return errors
 
 
 def _record_review(conn: sqlite3.Connection, source_message_id: str, decision: str, reviewer: str, notes: str, orig_event, corrected_event=None, changed_fields: Optional[Dict] = None) -> int:
@@ -430,7 +506,17 @@ def approve_as_parsed(source_message_id: str, reviewer: str, db_path: Path = DAT
         conn.execute("BEGIN IMMEDIATE")
         if not _lock_message(conn, source_message_id): return {"status": "ALREADY_REVIEWED"}
 
-        prediction = _load_prediction_object(conn, source_message_id)
+        prediction_row = _load_prediction_row(conn, source_message_id)
+        prediction = _prediction_from_json(prediction_row["prediction_json"])
+        safety_errors = _approval_safety_errors(prediction, prediction_row["validation_status"])
+        if safety_errors:
+            conn.rollback()
+            return {
+                "status": "ERROR",
+                "message": "INVALID_PREDICTION_CANNOT_APPROVE_AS_PARSED: "
+                           + "; ".join(safety_errors),
+            }
+
         review_id = _record_review(conn, source_message_id, "APPROVED", reviewer, "", prediction)
 
         try:
@@ -462,6 +548,14 @@ def edit_and_approve(source_message_id: str, reviewer: str, corrected_event, cha
         if not _lock_message(conn, source_message_id): return {"status": "ALREADY_REVIEWED"}
 
         orig_event = _load_prediction_object(conn, source_message_id)
+        validation_errors = _validate_corrected_for_apply(corrected_event)
+        if validation_errors:
+            conn.rollback()
+            return {
+                "status": "ERROR",
+                "message": "CORRECTED_EVENT_INVALID: " + "; ".join(validation_errors),
+            }
+
         review_id = _record_review(conn, source_message_id, "APPROVED_WITH_CORRECTION", reviewer, notes, orig_event, corrected_event, changed_fields)
 
         try:

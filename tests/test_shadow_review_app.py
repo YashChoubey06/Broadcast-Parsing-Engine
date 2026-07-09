@@ -61,3 +61,7 @@ def test_shadow_review_app_renders_unknown_prediction(tmp_path, monkeypatch):
     assert not app.exception
     assert any("legacy unknown prediction" in code.value for code in app.code)
     assert any("UNKNOWN" in option for selectbox in app.selectbox for option in selectbox.options)
+    assert any("This prediction is INVALID" in warning.value for warning in app.warning)
+    approve_buttons = [button for button in app.button if button.label == "Approve as Parsed"]
+    assert approve_buttons
+    assert approve_buttons[0].disabled

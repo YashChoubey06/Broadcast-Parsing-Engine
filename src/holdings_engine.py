@@ -59,6 +59,7 @@ _REQUIRES_EXISTING = {
 
 # Actions that only update the stop loss / record status
 _STATUS_ONLY = {"HOLD_POSITION", "TARGET_HIT", "UPDATE_STOP_LOSS"}
+_ENTRY_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "ADD_LONG", "ADD_SHORT"}
 
 
 def _now_iso() -> str:
@@ -130,6 +131,10 @@ class HoldingsEngine:
             )
 
         action = event.final_action
+        if action in _ENTRY_ACTIONS:
+            allocation_error = self._entry_allocation_error(event)
+            if allocation_error:
+                return HoldingsResult(status="ERROR", message=allocation_error)
 
         # ---- Route by action ---------------------------------------------
         try:
@@ -225,7 +230,7 @@ class HoldingsEngine:
 
         # Create new position, or reopen a closed full-identity row when an
         # ordered close-then-entry re-enters the same side.
-        alloc = event.quantity_percent or _DEFAULT_ALLOC
+        alloc = self._entry_allocation(event)
         pos_before = self._find_closed_full_identity_position(event, direction)
         pos = PositionState(
             position_id=pos_before.position_id if pos_before else None,
@@ -263,7 +268,7 @@ class HoldingsEngine:
             return self._handle_open(event, direction, processing_order)
 
         pos_before = self._clone(existing)
-        added = event.quantity_percent or _DEFAULT_ALLOC
+        added = self._entry_allocation(event)
         new_alloc = existing.current_allocation_pct + added
 
         # Weighted average entry price
@@ -622,6 +627,30 @@ class HoldingsEngine:
         applied and exactly one candidate must remain.
         """
         return self._resolve_position(event, event.direction)
+
+    @staticmethod
+    def _entry_default_allowed(event: ParsedTradeEvent) -> bool:
+        return (
+            event.quantity_basis == "CUSTOMER_BUYING_CAPACITY"
+            and event.auto_apply_eligible is True
+            and event.needs_review is False
+            and event.market_group != "International Market"
+        )
+
+    def _entry_allocation_error(self, event: ParsedTradeEvent) -> Optional[str]:
+        if event.quantity_percent is not None:
+            return None
+        if self._entry_default_allowed(event):
+            return None
+        return (
+            "MISSING_ENTRY_CAPACITY: entry event has quantity_basis="
+            f"{event.quantity_basis} but no quantity_percent; refusing unsafe default."
+        )
+
+    def _entry_allocation(self, event: ParsedTradeEvent) -> Decimal:
+        if event.quantity_percent is not None:
+            return event.quantity_percent
+        return _DEFAULT_ALLOC
 
     @staticmethod
     def _identity_review_reason(result: IdentityResolutionResult) -> str:
