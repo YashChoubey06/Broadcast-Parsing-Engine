@@ -1,578 +1,612 @@
-# Trade Message NLP Parser & Holdings Engine
+# Trade Message System
 
-A complete, locally-runnable Python project implementing a three-stage pipeline for processing trading broadcast messages:
+## 1. Project Overview
 
-- **Step 5** — Hybrid NLP + rule-based parser → structured `ParsedTradeEvent`
-- **Step 6** — Deterministic holdings engine consuming only validated events
-- **Step 7** — Historical replay over production messages with local SQLite persistence
+This repository contains the Python parser, validation, shadow-testing, and holdings engine for trade/broadcast messages.
 
----
+It turns raw messages such as entry calls, profit-booking updates, exits, and ordered close-then-entry instructions into structured trade events. Those events are validated, applied to shadow or verified holdings only when safe, and captured for human review, labels, and reports.
 
-## Architecture
+The current implementation is a standalone local Python workflow using SQLite and Streamlit. The intended product architecture is larger:
 
-```
-Raw message
-    ↓
-[Step 5] text_normalizer → alias_repository → entity_extractor
-                         → rule_parser (R01-R13)
-                         → ml_classifier (scikit-learn LR)
-                         → hybrid_parser (resolver)
-                         → validator
-    ↓
-Structured ParsedTradeEvent
-    ↓
-[Step 6] holdings_engine (Decimal arithmetic)
-         ← position_repository (interface)
-         ← trade_event_repository (interface)
-         ← processed_message_repository (idempotency)
-         ← review_queue_repository
-         ← snapshot_repository
-    ↓
-Updated holdings + immutable trade-event record
-    ↓
-[Step 7] SQLite persistence (storage/trade_holdings.db)
-         Historical replay (01_production_messages_final.csv)
+- Node.js backend receives live/broadcast messages and owns production orchestration.
+- React frontend presents review queues, diffs, and approval workflows.
+- Python parser/engine service preserves deterministic trade semantics and safe holdings application.
+- Human-reviewed portfolio state becomes the trusted source for future parsing, reporting, and model improvement.
+
+## 2. High-Level Architecture
+
+```text
+raw message source
+  -> Python ingest CLI/service
+  -> parser layer
+     -> rule parser
+     -> ML/hybrid parser
+     -> entity extractor
+  -> validator
+  -> shadow service
+  -> holdings engine / ordered event service
+  -> SQLite repository
+  -> Streamlit review apps
+  -> human review decisions
+  -> verified holdings, labels, reports
 ```
 
-### Why the parser and engine are separate
+Key modules:
 
-The NLP model **never modifies holdings**. It produces a `ParsedTradeEvent`.
-Only the deterministic engine reads positions and applies changes.
-This means:
-- A misclassification cannot corrupt positions.
-- The engine is fully unit-testable without any ML dependency.
-- Rules always override ML for deterministic phrases (SL touched, part profit, etc.).
-- The ML model can be retrained or replaced without touching the engine.
+| Layer | Files | Purpose |
+|---|---|---|
+| Parser layer | `src/hybrid_parser.py`, `src/rule_parser.py` | Resolve deterministic rules, ML predictions, and ordered bundles into structured events. |
+| Entity extraction | `src/entity_extractor.py` | Extract symbols, prices, targets, stop loss, market hints, and multi-instrument signals. |
+| Validation | `src/validator.py` | Blocks invalid, ambiguous, unsafe, and unsupported single-event predictions before approval/application. |
+| Holdings engine | `src/holdings_engine.py` | Applies validated events with Decimal arithmetic and full instrument identity. |
+| Ordered event service | `src/ordered_event_service.py` | Applies ordered close-then-entry bundles atomically. |
+| Shadow service | `src/shadow_service.py` | Ingests predictions, applies shadow state, records human reviews, and updates verified state only after approval. |
+| Position identity | `src/position_identity.py` | Canonicalizes and resolves full instrument keys. |
+| SQLite repository | `src/database.py`, repository implementations | Local persistence for positions, event ledgers, predictions, reviews, labels, and migrations. |
+| CLI tools | `src/ingest_shadow_message.py`, `src/import_verified_positions.py`, `scripts/migrate_shadow_tables.py` | Local setup, migration, seeding, and message ingestion. |
+| Review apps | `app/shadow_review_app.py`, `app/phase4_candidate_review_app.py` | Streamlit review workflows for live/shadow review and historical Phase 4 candidate review. |
 
----
+Future Node/React integration should move orchestration, authentication, queue ownership, and production storage into the main app stack while preserving the Python parser and engine safety rules.
 
-## Installation
+## 3. Message Processing Flow
 
-### Windows PowerShell
+```text
+raw message
+  -> ingest
+  -> parse
+  -> validate
+  -> shadow apply if safe
+  -> human review
+  -> approve / reject / edit
+  -> verified holdings update
+  -> labels / reports
+```
+
+Important boundary: verified holdings should not change before human approval. Shadow holdings may change for safe predictions so reviewers can compare parser intent against the verified portfolio.
+
+## 4. Current Status / What Has Been Completed
+
+- Phase 1: v2 entry/reduction semantics implemented.
+- Phase 2: full instrument identity implemented and indexed.
+- Phase 3: atomic ordered close-then-entry handling implemented.
+- Phase 4: raw candidate recovery and human review workflow implemented.
+- Phase 4 correction: text-level close-then-entry labels are separated from runtime portfolio outcomes.
+- Phase 5: reviewed label export and parser evaluation implemented.
+- Phase 5.1: reviewed parser regressions fixed.
+- Phase 6: acceptance passed with verdict `READY_FOR_CONTROLLED_MANUAL_SHADOW_PILOT`.
+- Pilot v3 smoke test passed with verdict `READY_FOR_SMALL_LIVE_SHADOW_PILOT`.
+- Live pilot v1 found an invalid approval safety issue: invalid parser predictions could be approved as parsed.
+- Safety fix added: invalid approvals are blocked.
+- Safety fix added: unsupported multi-instrument single-event approvals are blocked.
+
+Latest local tags include:
+
+- `phase-1-v2-semantics`
+- `phase-2-position-identity`
+- `phase-3-ordered-reversals`
+- `phase-4-review-workflow`
+- `phase-5-reviewed-label-export`
+- `phase-5-1-parser-regressions-fixed`
+- `phase-6-ready-for-shadow-pilot`
+- `pilot-v3-smoke-test-pass`
+- `invalid-approval-safety-fix`
+- `multi-instrument-single-event-safety-fix`
+
+## 5. What Is Left / Roadmap
+
+- Continue controlled live pilot v2.
+- Generate a live pilot v2 report.
+- Integrate with the Node.js backend.
+- Build a React review UI or integrate the current review workflow into the product frontend.
+- Decide API contracts for ingest, parse, review, approve, reject, edit-approve, holdings, and audit events.
+- Replace manual CLI ingestion with backend-owned live/broadcast ingestion.
+- Build auth, user, and portfolio mapping.
+- Add a production database strategy.
+- Add monitoring and audit logs.
+- Decide a model retraining schedule.
+- Collect more human-reviewed labels.
+- Improve multi-instrument splitting into multiple child events.
+- Improve segment/market normalization UX.
+- Add deployment packaging.
+- Add CI/CD.
+- Decide when, if ever, auto-apply is allowed. Currently manual approval remains required.
+
+## 6. Setup Instructions
+
+Use the project virtual environment:
 
 ```powershell
-cd "c:\Astrodunia text parsing\trade_message_system"
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .
+cd "C:\Astrodunia text parsing\trade_message_system"
+.\.venv\Scripts\python.exe --version
 ```
 
-### macOS / Linux
-
-```bash
-cd "/path/to/trade_message_system"
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-```
-
----
-
-## Dataset placement
-
-All required CSV files are already in `data/`. They were copied from the source package:
-
-```
-data/
-├── 01_production_messages_final.csv
-├── 03_model_train_ready_deduplicated.csv
-├── 04_annotation_review_queue.csv
-├── 05_production_manual_or_context_queue.csv
-├── 07_pilot_train_210.csv
-├── 08_pilot_validation_45.csv
-├── 09_pilot_test_45.csv
-├── 10_instrument_aliases.csv
-├── 11_label_and_position_rules.csv
-└── 12_dataset_schema.csv
-```
-
----
-
-## Initialise the database
+Install dependencies only if the environment is missing packages:
 
 ```powershell
-python -m src.database
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-or
+Set an isolated database path in every terminal:
 
 ```powershell
-python scripts/init_database.py
+$env:TRADE_DB_PATH = "C:\Astrodunia text parsing\trade_message_system\storage\shadow_live_pilot_v2.db"
 ```
 
-Database location: `storage/trade_holdings.db`
-
----
-
-## Train the model
-
-### Pilot files (recommended first step)
+Initialize the database:
 
 ```powershell
-python -m src.train_model `
-  --train data/07_pilot_train_210.csv `
-  --validation data/08_pilot_validation_45.csv `
-  --test data/09_pilot_test_45.csv
+.\.venv\Scripts\python.exe -m src.database
 ```
 
-### Full deduplicated dataset with auto-split
+Run shadow-table migrations:
 
 ```powershell
-python -m src.train_model `
-  --train data/03_model_train_ready_deduplicated.csv `
-  --auto-split
+.\.venv\Scripts\python.exe scripts\migrate_shadow_tables.py --db $env:TRADE_DB_PATH
 ```
 
-### With comparison models
+Import verified positions:
 
 ```powershell
-python -m src.train_model `
-  --train data/07_pilot_train_210.csv `
-  --validation data/08_pilot_validation_45.csv `
-  --test data/09_pilot_test_45.csv `
-  --compare
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --dry-run
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --apply --confirm
 ```
 
-Model saved to: `models/action_classifier.joblib`
-
-> **Label note**: Training labels are initial/weak (rule-assisted annotation), not fully human-verified gold-standard. Evaluation reports represent baseline performance.
-
----
-
-## Evaluation reports
-
-After training, reports are written to `reports/`:
-
-| File | Contents |
-|------|----------|
-| `classification_report.json` | Accuracy, macro F1, weighted F1, per-class metrics |
-| `classification_report.csv` | Same as above in CSV |
-| `confusion_matrix.csv` | Class × class confusion matrix |
-| `misclassified_examples.csv` | Rows where prediction ≠ true label |
-| `low_confidence_predictions.csv` | Predictions below AUTO_APPLY_THRESHOLD |
-
----
-
-## Parse one message
+Run tests when you need verification:
 
 ```powershell
-python -m src.parse_message --text "50% PROFIT BOOK IN NIFTY @25942"
+.\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short --basetemp .pytest_tmp_full
 ```
 
-With holdings context (routes unsafe opposite-side standalone entries to review):
-
-```powershell
-python -m src.parse_message `
-  --text "SELL 50% NIFTY" `
-  --portfolio default `
-  --use-db-context
-```
-
----
-
-## Apply one message
-
-```powershell
-python -m src.apply_message `
-  --message-id test-001 `
-  --text "BUY 50% NVDA @145 SL 140 TGT 155"
-```
-
----
-
-## Historical replay
-
-### Dry-run (no database changes)
-
-```powershell
-python -m src.replay `
-  --input data/01_production_messages_final.csv `
-  --db storage/trade_holdings.db `
-  --mode dry-run
-```
-
-Dry-run uses in-memory repositories; the real database is not touched.
-
-### Safe-apply
-
-```powershell
-python -m src.replay `
-  --input data/01_production_messages_final.csv `
-  --db storage/trade_holdings.db `
-  --mode safe-apply
-```
-
-Safe-apply only processes messages where:
-- `auto_apply_eligible = True` (dataset)
-- `needs_review = False` (dataset)
-- `requires_context = False` (dataset)
-- Fresh parser validation passes
-- `source_message_id` has not been previously processed
-- Parser action agrees with dataset label
-
-Everything else goes to the manual-review queue.
-
-### Reset the development database (DANGER)
-
-```powershell
-python -m src.replay --reset-database --confirm-reset
-```
-
-This drops and recreates all tables. Never run on production data.
-Only databases inside `storage/` can be reset for safety.
-
----
-
-## Inspect holdings
-
-```powershell
-python -m src.show_holdings
-python -m src.show_holdings --all        # includes closed positions
-```
-
-## Inspect symbol history
-
-```powershell
-python -m src.show_history --symbol NIFTY
-python -m src.show_history --symbol CRUDE
-```
-
-## Inspect review queue
-
-```powershell
-python -m src.show_review_queue
-python -m src.show_review_queue --all
-```
-
-## Shadow review workflow
-
-Shadow testing uses separate portfolios in the shared `positions` table:
-
-| Portfolio | Purpose |
-|-----------|---------|
-| `default` / historical | Historical replay and standard local application |
-| `shadow` | Parser predictions applied for comparison only |
-| `verified` | Human-approved holdings state |
-
-Ingested shadow messages are stored as immutable parser predictions first.
-Safe parser predictions may update only the `shadow` portfolio. The `verified`
-portfolio changes only after a human reviewer approves or edits the prediction.
-
-Start the local review app:
+Launch the local review app:
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app/shadow_review_app.py
 ```
 
-Export human-reviewed labels for future training:
+Do not start Streamlit or live ingestion unless that is the explicit task.
+
+## 7. Environment Variables
+
+### `TRADE_DB_PATH`
+
+`TRADE_DB_PATH` controls which SQLite file the Python code uses through `src.config.DATABASE_PATH`.
+
+Set it in every PowerShell terminal before initializing, migrating, importing, ingesting, reviewing, or reporting:
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.export_verified_training_data --output data/verified_shadow_labels.csv
+$env:TRADE_DB_PATH = "C:\Astrodunia text parsing\trade_message_system\storage\shadow_live_pilot_v2.db"
+.\.venv\Scripts\python.exe -c "from src.config import DATABASE_PATH; print(DATABASE_PATH)"
 ```
 
-## Phase 4 raw reversal candidate recovery
+If a terminal does not set `TRADE_DB_PATH`, tools may fall back to the default database path. That can accidentally write pilot data to the wrong SQLite database.
 
-Phase 4 creates a local human-review dataset from the immutable raw CSV:
+## 8. Database Safety Rules
+
+- Do not use operational databases for tests.
+- Do not use `storage/trade_holdings.db` for pilots.
+- Use fresh pilot databases, for example `storage/shadow_live_pilot_v2.db`.
+- Do not reuse issue-discovery databases as final evidence.
+- Keep pilot databases archived for auditability.
+- Do not reset, migrate, or mutate historical/operational databases unless the task explicitly approves that exact action.
+- `storage/shadow_manual.db` is pre-refactor and should not be used as trusted labels.
+
+## 9. CLI Usage
+
+Initialize the configured database:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/phase4_reversal_candidate_scanner.py
+$env:TRADE_DB_PATH = "C:\Astrodunia text parsing\trade_message_system\storage\shadow_live_pilot_v2.db"
+.\.venv\Scripts\python.exe -m src.database
 ```
 
-The scanner fails closed unless `data/raw/broadcast_admin.broadcasts.csv` has
-exactly 1,704 data rows and SHA-256
-`824d76f16474c4dd08cf72e9382462169621510a4c861ed3bd941755f3ffad65`.
+Run migrations:
 
-Generated local outputs:
+```powershell
+.\.venv\Scripts\python.exe scripts\migrate_shadow_tables.py --db $env:TRADE_DB_PATH
+```
 
-| File | Contents |
-|------|----------|
-| `data/review/phase4_reversal_candidates.csv` | Proprietary raw-text candidate rows for human review only |
-| `data/review/phase4_reversal_candidates_manifest.json` | Candidate schema, source integrity, IDs, and aggregate totals |
-| `reports/phase4_reversal_candidate_summary.json` | Aggregate counts and candidate IDs only |
-| `reports/phase4_reversal_candidate_reason_counts.csv` | Inclusion-reason counts |
-| `reports/phase4_reversal_parser_comparison.csv` | Phase 3 parser comparison metadata |
-| `reports/phase4_reversal_source_integrity.json` | Source hash, row count, and headers |
+Import verified positions:
 
-Every candidate starts as `PENDING_REVIEW` with `use_for_training=false`.
-No Phase 4 candidate is a trusted label. The scan does not reconstruct
-holdings context, does not apply events, does not relabel datasets, does not
-retrain the model, does not migrate databases, and does not start Phase 5.
+```powershell
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --dry-run
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --apply --confirm
+```
 
-### Phase 4 candidate human review
+Ingest one shadow message:
 
-Review decisions are stored separately from immutable scanner output:
+```powershell
+.\.venv\Scripts\python.exe -m src.ingest_shadow_message --message-id "pilot-v2-001" --text "BUY 50% TSLA" --segment "GLOBAL_EQUITY"
+```
 
-| File | Contents |
-|------|----------|
-| `data/review/phase4_reversal_candidates.csv` | Immutable scanner output; do not edit or overwrite |
-| `data/review/phase4_reversal_review_decisions.csv` | Human decisions keyed by `candidate_id` |
-| `data/review/phase4_reversal_candidates_reviewed.csv` | Regenerated merge of scanner output plus decisions |
+Verify the active database path:
 
-Start the local review app:
+```powershell
+.\.venv\Scripts\python.exe -c "from src.config import DATABASE_PATH; print(DATABASE_PATH)"
+```
+
+Run tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short --basetemp .pytest_tmp_full
+```
+
+## 10. Verified Positions CSV Format
+
+Required columns:
+
+```text
+symbol,direction,current_allocation_pct,market_group,contract_month,option_type,strike_price,average_entry_price,stop_loss,targets,status,as_of_timestamp
+```
+
+Example rows:
+
+```csv
+symbol,direction,current_allocation_pct,market_group,contract_month,option_type,strike_price,average_entry_price,stop_loss,targets,status,as_of_timestamp
+SBIN,LONG,100,NSE,,,,800,780,"820,850",OPEN,2026-07-09T00:00:00+05:30
+GOLD,LONG,50,MCX,AUG,,,74000,73500,"74500,75000",OPEN,2026-07-09T00:00:00+05:30
+AAPL,LONG,100,GLOBAL_EQUITY,,,,200,190,"210,220",OPEN,2026-07-09T00:00:00+05:30
+GOLD,LONG,100,International Market,AUG,,,4102,4000,"4500,4600",OPEN,2026-07-09T00:00:00+05:30
+NIFTY,SHORT,75,Indian Indices,JULY,,,25000,25200,"24800,24600",OPEN,2026-07-09T00:00:00+05:30
+```
+
+Keep the CSV local unless it is intentionally sanitized and approved for commit.
+
+## 11. Segment / Market Group Guidance
+
+Examples:
+
+| Market group | Symbols |
+|---|---|
+| `GLOBAL_EQUITY` | `AAPL`, `TSLA`, `NVDA`, `MSFT` |
+| `NSE` | `SBIN`, `HDFCBANK`, `INFY`, `RELIANCE`, `NIFTY`, `BANKNIFTY` |
+| `MCX` | `GOLD`, `SILVER`, `COPPER`, `CRUDE_MINI`, `CRUDEOILM` |
+| `International Market` | `GOLD AUG`, `SILVER JULY`, `SP500`, `NASDAQ`, `DOW`, `RUSSELL` |
+| `Indian Indices` | `NIFTY`, `BANKNIFTY`, `FINNIFTY`, `SENSEX` |
+
+Segment values must match seeded position identity exactly. For example, `GLOBAL_EQUITY` and `Global Equity` are not interchangeable for full-key position matching.
+
+## 12. Streamlit App Usage
+
+Main app:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/shadow_review_app.py
+```
+
+Use it to inspect the review queue and choose:
+
+- Approve as parsed.
+- Edit and approve.
+- Reject.
+- Needs context.
+- Duplicate.
+- Non-trade.
+
+Safety behavior:
+
+- Invalid predictions cannot be approved as parsed.
+- Unsupported multi-instrument single-event predictions cannot be approved as parsed.
+- Edit-and-approve must provide a corrected valid event or bundle.
+- Verified portfolio should not change before human approval.
+- Parser predictions are immutable; corrections and decisions are stored separately.
+
+## 13. Phase 4 Candidate Review App
+
+Historical candidate review app:
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app/phase4_candidate_review_app.py
 ```
 
-Generate review-progress reports:
+This app is for recovered historical Phase 4 close-then-entry candidates. It is not needed for normal live pilot work unless you are reviewing those recovered historical candidates.
+
+## 14. Testing
+
+Full suite:
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.phase4_review_summary
+.\.venv\Scripts\python.exe -m pytest tests/ -v --tb=short --basetemp .pytest_tmp_full
 ```
 
-The generated reports are:
+Latest known documented full-suite result from `docs/CURRENT_STATE.md` after Phase 5 was `228 passed`. Phase 6 and later safety fixes added more code and commits; rerun the suite before relying on a current count.
 
-| File | Contents |
-|------|----------|
-| `reports/phase4_human_review_summary.json` | Counts, progress percentage, and candidate IDs only |
-| `reports/phase4_human_review_status_counts.csv` | Count by review status |
-| `reports/phase4_human_review_training_eligibility.csv` | Training-eligible candidate IDs and statuses |
-| `reports/phase4_human_review_progress.csv` | One-row progress summary |
-
-The authoritative text-level confirmation status is
-`CONFIRMED_ORDERED_CLOSE_THEN_ENTRY`: clause 1 fully closes the current database
-position, clause 2 opens a new `BUY` or `SELL` entry, the clauses share the same
-non-direction instrument identity, and ordering is clear. The review-layer
-bundle type is `ORDERED_CLOSE_THEN_ENTRY`. The runtime portfolio outcome is
-separate and stored in `portfolio_effect_status`:
-`NOT_EVALUATED`, `REVERSAL`, `SAME_SIDE_REENTRY`, `NO_OPEN_POSITION`,
-`AMBIGUOUS_POSITION`, or `IDENTITY_CONFLICT`.
-
-For raw historical Phase 4 text-only review, `portfolio_effect_status` defaults
-to `NOT_EVALUATED`. Do not infer `REVERSAL` from text alone; previous
-`LONG/SHORT` database state is required to distinguish reversals from same-side
-re-entries. Legacy `CONFIRMED_ORDERED_REVERSAL` decisions remain readable but
-are deprecated in the UI and are not silently rewritten.
-
-Training flags are split:
-
-| Field | Meaning |
-|------|---------|
-| `use_for_structure_training` | Text split, close clause, entry clause, identity, and parsed labels are reliable |
-| `use_for_portfolio_effect_training` | Trustworthy prior position context labels `REVERSAL` or `SAME_SIDE_REENTRY` |
-| `use_for_training` | Legacy readable field; maps to structure training for backward compatibility, not portfolio-effect training |
-
-False positives, ambiguous messages, gibberish, needs-context records, and
-do-not-use records cannot be marked training eligible. Phase 5 remains blocked
-until candidate review is complete and explicitly approved.
-
-### Phase 5 reviewed label export and parser evaluation
-
-Phase 5 exports reviewed text-structure labels from the completed Phase 4 human
-decisions and evaluates the current parser against them. It does not retrain,
-fine-tune, overwrite the production model, regenerate historical replay, run
-shadow acceptance, migrate operational databases, or start Phase 6.
+Focused categories:
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.phase5_training_export
+.\.venv\Scripts\python.exe -m pytest tests/test_holdings_engine.py -v --tb=short
+.\.venv\Scripts\python.exe -m pytest tests/test_shadow_workflow.py -v --tb=short
+.\.venv\Scripts\python.exe -m pytest tests/test_sqlite_repository.py -v --tb=short
+.\.venv\Scripts\python.exe -m pytest tests/test_phase4_review_workflow.py -v --tb=short
 ```
 
-Local generated outputs:
+## 15. Model / ML Notes
 
-| File | Contents |
-|------|----------|
-| `data/derived/phase5_ordered_close_then_entry_labels.csv` | Reviewed structure-training labels with proprietary raw text |
-| `data/derived/phase5_ordered_close_then_entry_labels.jsonl` | JSONL copy of the reviewed labels |
-| `reports/phase5_review_audit.json` | Review completion, flag, and consistency audit |
-| `reports/phase5_training_export_summary.json` | Export counts, excluded status counts, and source hashes |
-| `reports/phase5_parser_baseline_evaluation.json` | Field-level parser baseline metrics |
-| `reports/phase5_parser_baseline_failures.csv` | Candidate IDs and failed field names only |
+- Model artifacts exist under `models/`, but deterministic rules and validation are critical.
+- ML confidence is often below any safe unattended threshold.
+- Manual approval remains required.
+- Do not overwrite model artifacts during pilots.
+- Phase 5 exported reviewed labels for close-then-entry structure, but retraining was intentionally not done yet.
+- Reviewed labels and model outputs may contain sensitive or proprietary message text; treat them as local artifacts unless explicitly approved.
 
-The current reviewed baseline has `13` structure-training eligible
-`ORDERED_CLOSE_THEN_ENTRY` rows. Portfolio-effect training is skipped because
-there are currently `0` eligible portfolio-effect labels. The export keeps
-`data/derived/` ignored by Git because it contains proprietary message text.
+## 16. Data Privacy / Git Safety
 
-Runtime ordered close-then-entry application remains atomic: if the close child
-has no matching open position, the parent routes to review, child 2 is not
-executed, and holdings remain unchanged.
+Raw CSVs, databases, reviewed labels, derived files, reports, and model artifacts should generally not be committed.
 
----
-
-## Run tests
+Before any push or commit, inspect status:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/ -v
+git status --short
 ```
 
-Run a specific test file:
+Inspect tracked sensitive-looking files:
 
 ```powershell
-pytest tests/test_holdings_engine.py -v
+git ls-files | Select-String "storage|data/raw|data/review|data/derived|reports|models|\.db|\.csv|\.zip"
 ```
 
-With coverage:
+Local `.gitignore` rules should protect datasets and databases, but always verify. Pilot DBs, report CSVs, raw exports, and reviewed-label files can contain proprietary source text.
+
+## 17. Node.js / React Integration Plan
+
+Expected future architecture:
+
+1. Node.js backend receives broadcast/live messages.
+2. Backend sends message text, `source_message_id`, segment, user, portfolio, and trusted position context to the Python parser service.
+3. Python returns a structured prediction, validation status, review reason, and any ordered child events.
+4. Backend stores the prediction and review state.
+5. React frontend displays the review queue, parser output, warnings, and shadow/verified portfolio diffs.
+6. Human reviewer approves, rejects, marks needs-context/duplicate, or edits and approves.
+7. Backend calls an approval/apply service.
+8. Verified holdings update only after approval.
+9. Backend exposes audit events for compliance and debugging.
+
+Future API endpoints should include:
+
+- `POST /parse-message`
+- `POST /ingest-message`
+- `GET /review-queue`
+- `POST /review/:id/approve`
+- `POST /review/:id/reject`
+- `POST /review/:id/edit-approve`
+- `GET /holdings/verified`
+- `GET /holdings/shadow`
+- `GET /audit/events`
+
+The Python app currently uses SQLite and Streamlit for local validation. The product integration should move orchestration into Node/React while preserving parser/engine safety rules.
+
+## 18. Recommended API Contract Draft
+
+### Parse Message Request
+
+```json
+{
+  "source_message_id": "broadcast-123",
+  "raw_text": "BUY 50% TSLA @250 SL 240 TGT 270",
+  "segment": "GLOBAL_EQUITY",
+  "portfolio_id": "portfolio-001",
+  "user_id": "user-001",
+  "as_of_timestamp": "2026-07-09T10:00:00+05:30"
+}
+```
+
+### Parse Message Response
+
+```json
+{
+  "source_message_id": "broadcast-123",
+  "prediction_type": "event",
+  "validation_status": "VALID",
+  "needs_review": false,
+  "auto_apply_eligible": true,
+  "event": {
+    "final_action": "OPEN_LONG",
+    "symbol": "TSLA",
+    "market_group": "GLOBAL_EQUITY",
+    "direction": "LONG",
+    "quantity_percent": "50",
+    "quantity_basis": "CUSTOMER_BUYING_CAPACITY",
+    "position_effect": "OPEN"
+  },
+  "warnings": []
+}
+```
+
+### Ordered Bundle Response
+
+```json
+{
+  "source_message_id": "broadcast-124",
+  "prediction_type": "bundle",
+  "bundle_type": "ORDERED_CLOSE_THEN_ENTRY",
+  "is_ordered": true,
+  "validation_status": "VALID",
+  "children": [
+    {
+      "source_message_id": "broadcast-124#1",
+      "final_action": "CLOSE_POSITION",
+      "symbol": "AAPL",
+      "market_group": "GLOBAL_EQUITY",
+      "direction": "LONG",
+      "quantity_basis": "CURRENT_POSITION",
+      "position_effect": "CLOSE"
+    },
+    {
+      "source_message_id": "broadcast-124#2",
+      "final_action": "OPEN_SHORT",
+      "symbol": "AAPL",
+      "market_group": "GLOBAL_EQUITY",
+      "direction": "SHORT",
+      "quantity_percent": "50",
+      "quantity_basis": "CUSTOMER_BUYING_CAPACITY",
+      "position_effect": "OPEN"
+    }
+  ],
+  "portfolio_effect_status": "REVERSAL"
+}
+```
+
+### Validation Invalid Response
+
+```json
+{
+  "source_message_id": "broadcast-125",
+  "prediction_type": "event",
+  "validation_status": "INVALID",
+  "needs_review": true,
+  "auto_apply_eligible": false,
+  "review_reason": "ENTRY_CAPACITY_MISSING",
+  "event": {
+    "final_action": "OPEN_LONG",
+    "symbol": "GOLD",
+    "market_group": "International Market",
+    "direction": "LONG",
+    "quantity_percent": null,
+    "quantity_basis": "CUSTOMER_BUYING_CAPACITY"
+  },
+  "warnings": [
+    "Entry capacity missing; cannot default non-stock international entry."
+  ]
+}
+```
+
+### Approval Request
+
+```json
+{
+  "source_message_id": "broadcast-123",
+  "reviewer_id": "reviewer-001",
+  "decision": "APPROVE_AS_PARSED",
+  "notes": "Matches verified position context."
+}
+```
+
+### Holdings Diff Response
+
+```json
+{
+  "source_message_id": "broadcast-123",
+  "portfolio_id": "portfolio-001",
+  "status": "APPROVED",
+  "diff": [
+    {
+      "identity": {
+        "portfolio_id": "portfolio-001",
+        "market_group": "GLOBAL_EQUITY",
+        "symbol": "TSLA",
+        "contract_month": "",
+        "option_type": "",
+        "strike_price": "",
+        "direction": "LONG"
+      },
+      "before": null,
+      "after": {
+        "current_allocation_pct": "50",
+        "status": "OPEN"
+      }
+    }
+  ]
+}
+```
+
+## 19. Known Pitfalls
+
+- Wrong `TRADE_DB_PATH` terminal.
+- Wrong segment spelling or case.
+- Approving invalid predictions.
+- Multi-instrument messages collapsing into one event.
+- Missing entry capacity for non-stock or international entries.
+- Reusing old pilot databases.
+- Treating `storage/shadow_manual.db` as trusted labels.
+- Assuming `SELL` against an existing long means reduce or reverse.
+- Assuming text alone can decide `REVERSAL` versus `SAME_SIDE_REENTRY`.
+
+## 20. Quick Start: Local Pilot
 
 ```powershell
-pytest tests/ -v --cov=src --cov-report=term-missing
+cd "C:\Astrodunia text parsing\trade_message_system"
+$env:TRADE_DB_PATH = "C:\Astrodunia text parsing\trade_message_system\storage\shadow_live_pilot_v2.db"
+
+.\.venv\Scripts\python.exe -c "from src.config import DATABASE_PATH; print(DATABASE_PATH)"
+.\.venv\Scripts\python.exe -m src.database
+.\.venv\Scripts\python.exe scripts\migrate_shadow_tables.py --db $env:TRADE_DB_PATH
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --dry-run
+.\.venv\Scripts\python.exe -m src.import_verified_positions --input data\verified_initial_positions_live_pilot_v2.csv --db $env:TRADE_DB_PATH --apply --confirm
+.\.venv\Scripts\python.exe -m streamlit run app/shadow_review_app.py
+.\.venv\Scripts\python.exe -m src.ingest_shadow_message --message-id "pilot-v2-001" --text "BUY 50% TSLA" --segment "GLOBAL_EQUITY"
 ```
 
----
+Then review the message in Streamlit. Approve only if parser output and portfolio diff are correct.
 
-## Replay output reports
+## 21. Current Recommended Next Step
 
-After replay, these files are created in `reports/`:
+Continue a small controlled live pilot v2 after the safety fixes:
 
-| File | Contents |
-|------|----------|
-| `replay_dry_run_summary.json` | Counts summary (dry-run) |
-| `replay_dry_run_final_holdings.csv` | Simulated holdings (dry-run) |
-| `replay_dry_run_review_queue.csv` | Simulated review queue (dry-run) |
-| `final_holdings.csv` | Applied holdings (safe-apply) |
-| `manual_review_queue.csv` | Review queue (safe-apply) |
-| `trade_event_ledger.csv` | All applied events |
-| `dataset_parser_disagreements.csv` | Where parser ≠ dataset label |
-| `replay_errors.csv` | Processing failures |
+- Use a fresh database such as `storage/shadow_live_pilot_v2.db`.
+- Process 10-20 messages.
+- Require human review.
+- Generate a live pilot v2 report.
+- Do not start automated production ingestion yet.
 
-> **Holdings note**: Final holdings reflect positions reconstructable from the supplied historical period. They may not represent the complete real portfolio if the dataset does not start from a verified empty portfolio state.
+## Business Semantics Reference
 
----
+### BUY/SELL Entries
 
-## SQLite database location
+- `BUY 50%` adds 50 customer buying-capacity units to `LONG`.
+- `SELL 50%` adds 50 customer buying-capacity units to `SHORT`.
+- Repeated same-side entries can exceed 100: `50 -> 100 -> 150`.
+- There is no artificial cap at 100.
 
-```
-storage/trade_holdings.db
-```
+### Reductions And Closes
 
-Tables:
+- `PART PROFIT` reduces 25% of the current position.
+- `50% PROFIT BOOK` reduces 50% of the current position.
+- `FULL PROFIT BOOK`, `EXIT`, `SL TOUCH`, and `STOP LOSS HIT` close the current position.
 
-| Table | Purpose |
-|-------|---------|
-| `positions` | Latest state of each position |
-| `trade_events` | Immutable event ledger |
-| `processed_messages` | Idempotency log |
-| `manual_review_queue` | Pending review items |
-| `position_snapshots` | Holdings snapshot after each event |
-| `schema_migrations` | Applied migration log |
-| `incoming_messages` | Shadow-review input messages |
-| `parser_predictions` | Immutable parser predictions for review |
-| `human_reviews` | Human decisions and correction metadata |
-| `shadow_events` | Events applied to the shadow portfolio |
-| `verified_events` | Events approved into the verified portfolio |
-| `verified_labels` | Human-reviewed labels for training export |
+### Standalone Opposite-Side Entries
 
-All Decimal values (allocations, prices, stop losses) are stored as `TEXT` for exact precision.
+- Existing `LONG` + standalone `SELL` routes to review/conflict.
+- Existing `SHORT` + standalone `BUY` routes to review/conflict.
+- The system must not auto-reduce or auto-reverse without an explicit close.
 
-SQLite is intended here for local, limited single-writer operation. Do not treat
-the Streamlit review app plus batch tools as a high-concurrency production
-database deployment.
+### Ordered Close-Then-Entry
 
-### Position identity
+Example:
 
-Every position is identified by the normalized full key:
-
-```
-portfolio_id + market_group + symbol + contract_month + option_type + strike_price + direction
+```text
+EXIT FROM X & 50% SELL X
 ```
 
-Optional identity fields are persisted as non-null canonical strings:
+- Clause 1 fully closes the current database position.
+- Clause 2 opens a new `BUY` or `SELL` position.
+- Previous `LONG` + new `SELL` = `REVERSAL`.
+- Previous `SHORT` + new `BUY` = `REVERSAL`.
+- Previous `LONG` + new `BUY` = `SAME_SIDE_REENTRY`.
+- Previous `SHORT` + new `SELL` = `SAME_SIDE_REENTRY`.
+- All four are valid.
+- If the close clause has no matching open position, block the entire sequence.
+- Child 2 must not execute if child 1 fails.
+- If child 2 fails, child 1 must roll back.
+- The sequence must be atomic.
 
-- `contract_month = ""`
-- `option_type = ""`
-- `strike_price = ""`
-- unresolved `market_group = "UNKNOWN"`
+### Full Instrument Identity
 
-Repository lookups perform exact full-key matching when the event supplies the
-distinguishing identity fields. Legacy or incomplete messages use guarded
-fallback: all open positions in the same portfolio for the canonical symbol are
-filtered by every supplied field, and the event may proceed only if exactly one
-candidate remains. Ambiguous matches route to review with no position change.
+Every position must respect:
 
-Phase 2 migration `002_position_identity_indexes` normalizes identity columns,
-audits duplicate full keys, and creates full-key indexes only when safe. It
-never merges or deletes rows automatically.
-
----
-
-## Core business rule
-
-Entry percentages are customer buying-capacity units:
-
-```
-BUY 50% TSLA  -> add 50 LONG capacity units
-SELL 50% TSLA -> add 50 SHORT capacity units
+```text
+portfolio_id
+market_group
+symbol
+contract_month
+option_type
+strike_price
+direction
 ```
 
-Repeated same-side entries add exposure and may exceed 100:
+Avoid symbol-only matching. Same symbols can exist across markets, contract months, option types, strikes, and directions.
 
-```
-BUY 50% TSLA -> LONG 50
-BUY 50% TSLA -> LONG 100
-BUY 50% TSLA -> LONG 150
-```
+### Invalid Predictions
 
-Standalone opposite-side instructions require context. Existing `LONG` + standalone
-`SELL`, or existing `SHORT` + standalone `BUY`, is routed to review unless an
-explicit close/reduction clause precedes it.
-
-Ordered close-then-entry messages are supported when a parent message contains
-exactly two actionable clauses separated by `&`, semicolon, or a newline:
-
-```
-FULL PROFIT BOOK IN TSLA @1124 & 50% SELL TSLA @1124 SL 1200 TGT 1100-1050
-```
-
-The parser emits a parent `ParsedMessageBundle` with deterministic child IDs
-`parent#1` and `parent#2`. Child 1 must be an explicit complete close, and child
-2 must be a `BUY` or `SELL` entry for the same full non-direction instrument
-identity. Both children are applied atomically; if either child fails, neither
-position change is committed. Shadow application and verified approval both use
-this same all-or-nothing ordered-event service. The prior database position side
-determines whether the portfolio outcome is `REVERSAL` or
-`SAME_SIDE_REENTRY`; raw text alone is not enough.
-
-All reduction percentages apply to the **current holding**, not the original:
-
-```
-new_holding = current_holding × (1 − reduction_percentage / 100)
-```
-
-Example chain (must be exact with Decimal arithmetic):
-
-```
-Start: 100%
-50% profit book:  50% remains
-50% profit book:  25% remains
-50% profit book:  12.5% remains
-50% profit book:  6.25% remains
-```
-
-Part profit = 25% of current holding.
-Full profit / Exit / SL Touch = close entire remaining holding.
-
----
-
-## Migration to PostgreSQL or MongoDB
-
-The holdings engine depends only on the `Protocol` interfaces in `src/repository_interfaces.py`. To migrate:
-
-1. Create `src/postgres_repository.py` implementing the same interfaces.
-2. Wire the engine with the new repositories.
-3. No changes required to `holdings_engine.py`, `hybrid_parser.py`, or any business logic.
-
----
-
-## Current limitations
-
-1. **Weak labels**: Training labels are rule-assisted, not fully human-verified. Model metrics represent initial baseline performance.
-2. **No prior-event linking**: Corrections and IGNORE messages are sent to review. Automatic supersession requires additional implementation.
-3. **No real-time feed**: The system processes messages in batch from CSV files.
-4. **Missing portfolio start**: The production dataset may not start from an empty portfolio. Reduction/close messages without a known open position go to manual review.
-5. **Group actions**: `CLOSE_GROUP` is classified and reviewed but not automatically applied.
-6. **Multi-clause reversals**: Only explicit complete-close then opposite-entry ordered reversals are automatic. Partial-profit reversals, more than two actionable clauses, and simultaneous independent long/short cases still require review.
-7. **Dataset/model follow-up**: Raw CSV candidate recovery, dataset relabelling, model retraining, historical replay regeneration, operational database migration, and fresh historical/shadow acceptance are not part of Phase 3.
-8. **SQLite concurrency**: Local SQLite is suitable for controlled single-writer shadow review, not high-concurrency multi-user production review.
-9. **Phase 4 review boundary**: Recovered raw candidates are review evidence only. Phase 5 remains blocked until human review is complete and explicitly approved.
-
----
-
-## Safety warnings
-
-- **Never auto-apply corrections**: They require context linking to prior events.
-- **Never auto-apply conditional instructions**: They require external condition confirmation.
-- **Never treat standalone opposite-side entries as closes or reductions**: Existing `LONG` + `SELL`, or existing `SHORT` + `BUY`, requires context unless explicit close/reduction language is present.
-- **Never allow ML predictions to bypass validation**: Confidence < 0.95 does not auto-apply.
-- **Never process the same message_id twice**: The idempotency layer prevents duplicate application.
-- **Never reset the database without `--confirm-reset`**: The flag is mandatory.
+- `INVALID` predictions cannot be approved as parsed.
+- Missing entry capacity for unsafe categories must not silently default to 100.
+- Unsupported multi-instrument single-event messages must route to review/split-required.
+- Human approval is required for low-confidence, invalid, ambiguous, or context-dependent cases.
