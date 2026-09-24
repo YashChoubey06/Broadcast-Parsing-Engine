@@ -1,0 +1,36 @@
+services:
+  # ── FastAPI Parser Service ──────────────────────────────────────────
+  api:
+    build: .
+    container_name: trade-parser-api
+    ports:
+      - "8000:8000"
+    environment:
+      - TRADE_DB_PATH=/app/storage/trade_holdings.db
+    volumes:
+      - trade-storage:/app/storage
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Streamlit Review Dashboard ──────────────────────────────────────
+  review-ui:
+    build: .
+    container_name: trade-review-ui
+    command: ["streamlit", "run", "app/shadow_review_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    environment:
+      - TRADE_DB_PATH=/app/storage/trade_holdings.db
+    volumes:
+      - trade-storage:/app/storage
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  trade-storage:

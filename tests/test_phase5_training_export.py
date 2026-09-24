@@ -375,6 +375,9 @@ def test_reports_do_not_include_full_raw_message_text(tmp_path):
 
 
 def test_no_production_model_artifact_is_modified(tmp_path):
+    if not MODEL_PATH.exists():
+        import pytest
+        pytest.skip("Model artifact not present (run train_model.py to generate)")
     paths = _standard_paths(tmp_path)
     before = _hash(MODEL_PATH)
 
